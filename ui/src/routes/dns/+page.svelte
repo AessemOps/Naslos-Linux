@@ -4,7 +4,6 @@
   import AsyncState from '$lib/components/AsyncState.svelte';
   import Button from '$lib/components/Button.svelte';
   import DdnsForm from '$lib/components/DdnsForm.svelte';
-  import EmptyState from '$lib/components/EmptyState.svelte';
   import PageHeader from '$lib/components/PageHeader.svelte';
   import StatusBadge from '$lib/components/StatusBadge.svelte';
   import { confirmAction } from '$lib/stores/confirm';
@@ -109,10 +108,12 @@
     } catch (e) {
       entries = [];
       loadError = 'Failed to load dynamic DNS: ' + message(e);
-    } finally {
-      loading = false;
     }
+    // Keep the page in its loading state until the secondary data the add form
+    // snapshots (providers) and the app-record hints are settled, so the form
+    // cannot open with an empty provider select.
     await Promise.all([loadProviders(), loadDomains()]);
+    loading = false;
   }
 
   function providerName(name: string): string {
@@ -205,76 +206,72 @@
   <AsyncState
     {loading}
     error={loadError}
+    empty={entries.length === 0}
     loadingText="Loading dynamic DNS..."
+    emptyIcon="earth"
+    emptyTitle="No Dynamic DNS Entries"
+    emptyDetail="Add an entry to keep a record pointed at your public IP."
     onRetry={load}
   >
-    {#if entries.length === 0}
-      <EmptyState
-        icon="earth"
-        title="No Dynamic DNS Entries"
-        detail="Add an entry to keep a record pointed at your public IP."
-      />
-    {:else}
-      <div class="space-y-3">
-        {#each entries as entry (entry.id)}
-          <div class="card flex flex-col gap-4 sm:flex-row sm:items-start">
-            <div class="min-w-0 flex-1">
-              <div class="mb-1 flex flex-wrap items-center gap-2">
-                <h2 class="font-bold">{entryHost(entry)}</h2>
-                <span class="badge badge-neutral">{entry.recordType}</span>
-                <span class="badge badge-neutral">{providerName(entry.provider)}</span>
-                <StatusBadge state={entry.lastStatus || 'never run'} />
-                {#if !entry.enabled}
-                  <StatusBadge state="disabled" label="disabled" tone="neutral" />
-                {/if}
-                {#if usedTargets.has(entry.id)}
-                  <span
-                    class="badge badge-ok"
-                    title={`App DNS records on ${(targetDomains.get(entry.id) || []).join(', ')}`}
-                  >app records target</span>
-                {/if}
-              </div>
-              <p class="text-xs text-gray-500">
-                {#if entry.lastIP}IP <span class="font-mono">{entry.lastIP}</span>{/if}{entry.ttl ? ` • TTL ${entry.ttl}` : ''}{entry.nextRunAt ? ` • next ${new Date(entry.nextRunAt).toLocaleTimeString()}` : ''}
+    <div class="space-y-3">
+      {#each entries as entry (entry.id)}
+        <div class="card flex flex-col gap-4 sm:flex-row sm:items-start">
+          <div class="min-w-0 flex-1">
+            <div class="mb-1 flex flex-wrap items-center gap-2">
+              <h2 class="font-bold">{entryHost(entry)}</h2>
+              <span class="badge badge-neutral">{entry.recordType}</span>
+              <span class="badge badge-neutral">{providerName(entry.provider)}</span>
+              <StatusBadge state={entry.lastStatus || 'never run'} />
+              {#if !entry.enabled}
+                <StatusBadge state="disabled" label="disabled" tone="neutral" />
+              {/if}
+              {#if usedTargets.has(entry.id)}
+                <span
+                  class="badge badge-ok"
+                  title={`App DNS records on ${(targetDomains.get(entry.id) || []).join(', ')}`}
+                >app records target</span>
+              {/if}
+            </div>
+            <p class="text-xs text-gray-500">
+              {#if entry.lastIP}IP <span class="font-mono">{entry.lastIP}</span>{/if}{entry.ttl ? ` • TTL ${entry.ttl}` : ''}{entry.nextRunAt ? ` • next ${new Date(entry.nextRunAt).toLocaleTimeString()}` : ''}
+            </p>
+            {#if (entry.redactedProviderConfigKeys?.length ?? 0) > 0}
+              <p class="mt-1 text-xs text-gray-500">
+                Configured (values hidden):
+                <span class="font-mono">{entry.redactedProviderConfigKeys?.join(', ')}</span>.
               </p>
-              {#if (entry.redactedProviderConfigKeys?.length ?? 0) > 0}
-                <p class="mt-1 text-xs text-gray-500">
-                  Configured (values hidden):
-                  <span class="font-mono">{entry.redactedProviderConfigKeys?.join(', ')}</span>.
-                </p>
-              {/if}
-              {#if entry.lastError}
-                <p class="mt-1 text-xs text-amber-400">{entry.lastError}</p>
-              {/if}
-            </div>
-            <div class="flex flex-wrap gap-2">
-              <Button
-                size="sm"
-                variant="secondary"
-                loading={busy === entry.id}
-                disabled={!!busy && busy !== entry.id}
-                on:click={() => runNow(entry)}
-              >Update now</Button>
-              <Button
-                size="sm"
-                variant="secondary"
-                on:click={() => {
-                  editing = entry;
-                  showForm = true;
-                }}
-              >Edit</Button>
-              <Button
-                size="sm"
-                variant="danger"
-                loading={removing === entry.id}
-                disabled={!!busy && busy !== entry.id}
-                on:click={() => remove(entry)}
-              >Remove</Button>
-            </div>
+            {/if}
+            {#if entry.lastError}
+              <p class="mt-1 text-xs text-amber-400">{entry.lastError}</p>
+            {/if}
           </div>
-        {/each}
-      </div>
-    {/if}
+          <div class="flex flex-wrap gap-2">
+            <Button
+              size="sm"
+              variant="secondary"
+              loading={busy === entry.id && removing !== entry.id}
+              disabled={(busy === entry.id && removing === entry.id) || (!!busy && busy !== entry.id)}
+              on:click={() => runNow(entry)}
+            >Update now</Button>
+            <Button
+              size="sm"
+              variant="secondary"
+              on:click={() => {
+                editing = entry;
+                showForm = true;
+              }}
+            >Edit</Button>
+            <Button
+              size="sm"
+              variant="danger"
+              loading={removing === entry.id}
+              disabled={(busy === entry.id && removing !== entry.id) || (!!busy && busy !== entry.id)}
+              on:click={() => remove(entry)}
+            >Remove</Button>
+          </div>
+        </div>
+      {/each}
+    </div>
   </AsyncState>
 </div>
 

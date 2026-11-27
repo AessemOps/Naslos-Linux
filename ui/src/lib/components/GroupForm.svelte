@@ -52,7 +52,7 @@
   }
 
   function message(e: unknown): string {
-    return e instanceof ApiError ? e.message : 'Failed to save group';
+    return e instanceof Error ? e.message : 'Failed to save group';
   }
 
   async function save() {

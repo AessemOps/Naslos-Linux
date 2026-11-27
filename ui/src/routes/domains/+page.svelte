@@ -5,7 +5,6 @@
   import Button from '$lib/components/Button.svelte';
   import CertificateStatus from '$lib/components/CertificateStatus.svelte';
   import DomainForm from '$lib/components/DomainForm.svelte';
-  import EmptyState from '$lib/components/EmptyState.svelte';
   import PageHeader from '$lib/components/PageHeader.svelte';
   import { confirmAction } from '$lib/stores/confirm';
 
@@ -147,7 +146,7 @@
 <div class="mx-auto max-w-6xl">
   <PageHeader
     title="Domains &amp; SSL"
-    subtitle="Base domains and their ACME DNS-01 wildcard certificates. Promoting a domain to SSO makes apps on it require an Authelia login."
+    subtitle="Base domains and their ACME DNS-01 wildcard certificates. Promoting a domain to SSO lets apps on it require Authelia login (Authelia restarts briefly to apply the change)."
     breadcrumbs={[{ label: 'Networking' }, { label: 'Domains' }]}
   >
     <Button
@@ -184,92 +183,88 @@
   <AsyncState
     {loading}
     error={loadError}
+    empty={domains.length === 0}
     loadingText="Loading domains..."
+    emptyIcon="globe"
+    emptyTitle="No Domains Configured"
+    emptyDetail={`App subdomains hang off the primary domain ${baseDomain ? `(${baseDomain})` : ''}. Add another domain here to request a wildcard certificate for it.`}
     onRetry={load}
   >
-    {#if domains.length === 0}
-      <EmptyState
-        icon="globe"
-        title="No Domains Configured"
-        detail="App subdomains hang off the primary domain {baseDomain ? `(${baseDomain})` : ''}. Add another domain here to request a wildcard certificate for it."
-      />
-    {:else}
-      <div class="space-y-3">
-        {#each domains as domain (domain.baseDomain)}
-          <div class="card flex flex-col gap-4 sm:flex-row sm:items-start">
-            <div class="min-w-0 flex-1">
-              <div class="mb-1 flex flex-wrap items-center gap-2">
-                <h2 class="font-bold">{domain.baseDomain}</h2>
-                <span class="badge badge-neutral">{domain.dnsProvider}</span>
-                <span class="badge badge-neutral">{domain.environment}</span>
-                {#if domain.baseDomain === baseDomain}
-                  <span
-                    class="badge badge-neutral"
-                    title="The primary domain is always an SSO domain"
-                  >SSO (primary)</span>
-                {:else if isSSO(domain)}
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    loading={busy === domain.baseDomain && removing !== domain.baseDomain}
-                    disabled={busy === domain.baseDomain}
-                    on:click={() => setSSO(domain, false)}
-                  >SSO on — disable</Button>
-                {:else}
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    loading={busy === domain.baseDomain && removing !== domain.baseDomain}
-                    disabled={busy === domain.baseDomain}
-                    on:click={() => setSSO(domain, true)}
-                  >Make SSO</Button>
+    <div class="space-y-3">
+      {#each domains as domain (domain.baseDomain)}
+        <div class="card flex flex-col gap-4 sm:flex-row sm:items-start">
+          <div class="min-w-0 flex-1">
+            <div class="mb-1 flex flex-wrap items-center gap-2">
+              <h2 class="font-bold">{domain.baseDomain}</h2>
+              <span class="badge badge-neutral">{domain.dnsProvider}</span>
+              <span class="badge badge-neutral">{domain.environment}</span>
+              {#if domain.baseDomain === baseDomain}
+                <span
+                  class="badge badge-neutral"
+                  title="The primary domain is always an SSO domain"
+                >SSO (primary)</span>
+              {:else if isSSO(domain)}
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  loading={busy === domain.baseDomain && removing !== domain.baseDomain}
+                  disabled={busy === domain.baseDomain}
+                  on:click={() => setSSO(domain, false)}
+                >SSO on — disable</Button>
+              {:else}
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  loading={busy === domain.baseDomain && removing !== domain.baseDomain}
+                  disabled={busy === domain.baseDomain}
+                  on:click={() => setSSO(domain, true)}
+                >Make SSO</Button>
+              {/if}
+              <CertificateStatus domain={domain.baseDomain} />
+            </div>
+            <p class="text-xs text-gray-500">
+              Secret <span class="font-mono">{domain.credentialsSecret || '(none)'}</span>{domain.acmeEmail ? ` • ${domain.acmeEmail}` : ''}
+            </p>
+            {#if domain.solverConfigured || (domain.redactedProviderConfigKeys?.length ?? 0) > 0}
+              <p class="mt-1 text-xs text-gray-500">
+                {#if domain.solverConfigured}Solver configured (value hidden).{/if}
+                {#if (domain.redactedProviderConfigKeys?.length ?? 0) > 0}
+                  Configured (values hidden):
+                  <span class="font-mono">{domain.redactedProviderConfigKeys?.join(', ')}</span>.
                 {/if}
-                <CertificateStatus domain={domain.baseDomain} />
-              </div>
-              <p class="text-xs text-gray-500">
-                Secret <span class="font-mono">{domain.credentialsSecret || '(none)'}</span>{domain.acmeEmail ? ` • ${domain.acmeEmail}` : ''}
               </p>
-              {#if domain.solverConfigured || (domain.redactedProviderConfigKeys?.length ?? 0) > 0}
-                <p class="mt-1 text-xs text-gray-500">
-                  {#if domain.solverConfigured}Solver configured (value hidden).{/if}
-                  {#if (domain.redactedProviderConfigKeys?.length ?? 0) > 0}
-                    Configured (values hidden):
-                    <span class="font-mono">{domain.redactedProviderConfigKeys?.join(', ')}</span>.
-                  {/if}
-                </p>
-              {/if}
-              {#if domain.appRecordsDdnsEntry}
-                <p class="mt-1 text-xs text-emerald-300">
-                  App DNS records → <span class="font-mono">{appRecordsTarget(domain)}</span>
-                </p>
-              {:else if domain.appRecordsSupported}
-                <p class="mt-1 text-xs text-gray-500">App DNS records disabled</p>
-              {/if}
-              {#if domain.lastError}
-                <p class="mt-1 text-xs text-amber-400">{domain.lastError}</p>
-              {/if}
-            </div>
-            <div class="flex flex-wrap gap-2">
-              <Button
-                size="sm"
-                variant="secondary"
-                on:click={() => {
-                  editing = domain;
-                  showForm = true;
-                }}
-              >Edit</Button>
-              <Button
-                size="sm"
-                variant="danger"
-                loading={removing === domain.baseDomain}
-                disabled={busy === domain.baseDomain && removing !== domain.baseDomain}
-                on:click={() => remove(domain)}
-              >Remove</Button>
-            </div>
+            {/if}
+            {#if domain.appRecordsDdnsEntry}
+              <p class="mt-1 text-xs text-emerald-300">
+                App DNS records → <span class="font-mono">{appRecordsTarget(domain)}</span>
+              </p>
+            {:else if domain.appRecordsSupported}
+              <p class="mt-1 text-xs text-gray-500">App DNS records disabled</p>
+            {/if}
+            {#if domain.lastError}
+              <p class="mt-1 text-xs text-amber-400">{domain.lastError}</p>
+            {/if}
           </div>
-        {/each}
-      </div>
-    {/if}
+          <div class="flex flex-wrap gap-2">
+            <Button
+              size="sm"
+              variant="secondary"
+              on:click={() => {
+                editing = domain;
+                showForm = true;
+              }}
+            >Edit</Button>
+            <Button
+              size="sm"
+              variant="danger"
+              loading={removing === domain.baseDomain}
+              disabled={busy === domain.baseDomain && removing !== domain.baseDomain}
+              on:click={() => remove(domain)}
+            >Remove</Button>
+          </div>
+        </div>
+      {/each}
+    </div>
   </AsyncState>
 </div>
 

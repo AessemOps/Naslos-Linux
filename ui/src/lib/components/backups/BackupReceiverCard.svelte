@@ -1,6 +1,5 @@
 <script lang="ts">
   import { createEventDispatcher } from 'svelte';
-  import Button from '$lib/components/Button.svelte';
   import DataTable from '$lib/components/DataTable.svelte';
   import ErrorState from '$lib/components/ErrorState.svelte';
   import { formatBytes } from '$lib/format';
@@ -33,11 +32,11 @@
     {#if receiver.peers.length === 0}
       <p class="text-sm text-gray-500">No peers authorized.</p>
     {:else}
-      <DataTable>
-        <table class="w-full table-fixed">
+      <DataTable label="Authorized backup peers">
+        <table class="w-full">
           <thead>
             <tr>
-              <th scope="col" class="w-1/3">Peer</th>
+              <th scope="col">Peer</th>
               <th scope="col">Fingerprint</th>
             </tr>
           </thead>
@@ -56,13 +55,13 @@
     {#if receiver.backups.length === 0}
       <p class="text-sm text-gray-500">Nothing stored yet.</p>
     {:else}
-      <DataTable>
-        <table class="w-full table-fixed">
+      <DataTable label="Backup chains stored on this receiver">
+        <table class="w-full">
           <thead>
             <tr>
               <th scope="col">Source</th>
               <th scope="col">Chain</th>
-              <th scope="col" class="w-24 text-right">Stored</th>
+              <th scope="col" class="text-right">Stored</th>
             </tr>
           </thead>
           <tbody>

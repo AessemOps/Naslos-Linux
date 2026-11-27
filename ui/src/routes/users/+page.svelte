@@ -4,7 +4,6 @@
   import AsyncState from '$lib/components/AsyncState.svelte';
   import Button from '$lib/components/Button.svelte';
   import DataTable from '$lib/components/DataTable.svelte';
-  import EmptyState from '$lib/components/EmptyState.svelte';
   import PageHeader from '$lib/components/PageHeader.svelte';
   import StatusBadge from '$lib/components/StatusBadge.svelte';
   import UserForm from '$lib/components/UserForm.svelte';
@@ -116,85 +115,82 @@
   <AsyncState
     {loading}
     error={loadError}
+    empty={users.length === 0}
     loadingText="Loading users..."
+    emptyIcon="user"
+    emptyTitle="No Users"
+    emptyDetail="Create your first user to enable authentication."
     onRetry={loadUsers}
   >
-    {#if users.length === 0}
-      <EmptyState
-        icon="user"
-        title="No Users"
-        detail="Create your first user to enable authentication."
-      >
-        <Button slot="action" on:click={newUser}>Create User</Button>
-      </EmptyState>
-    {:else}
-      <DataTable>
-        <table class="min-w-[48rem]">
-          <thead>
+    <svelte:fragment slot="emptyAction">
+      <Button on:click={newUser}>Create User</Button>
+    </svelte:fragment>
+    <DataTable label="Users">
+      <table class="min-w-[48rem]">
+        <thead>
+          <tr>
+            <th scope="col">User</th>
+            <th scope="col">Email</th>
+            <th scope="col">Groups</th>
+            <th scope="col">Status</th>
+            <th scope="col">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {#each users as user (user.uid)}
             <tr>
-              <th scope="col">User</th>
-              <th scope="col">Email</th>
-              <th scope="col">Groups</th>
-              <th scope="col">Status</th>
-              <th scope="col">Actions</th>
+              <td>
+                <div class="font-medium" title={user.displayName || user.uid}>
+                  {user.displayName || user.uid}
+                </div>
+                <div class="font-mono text-xs text-gray-500" title={user.uid}>{user.uid}</div>
+              </td>
+              <td class="whitespace-nowrap text-gray-300" title={user.email || ''}>
+                {user.email || '—'}
+              </td>
+              <td>
+                <div class="flex flex-wrap gap-1">
+                  {#each user.groups as group (group)}
+                    <span class="badge badge-neutral">{group}</span>
+                  {/each}
+                </div>
+              </td>
+              <td>
+                <StatusBadge
+                  state={user.enabled ? 'active' : 'disabled'}
+                  label={user.enabled ? 'Active' : 'Disabled'}
+                />
+              </td>
+              <td>
+                <div class="flex flex-wrap gap-2">
+                  <Button size="sm" variant="secondary" on:click={() => editUser(user)}>
+                    Edit
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    loading={busy === `${user.uid}:toggle`}
+                    disabled={!!busy && busy !== `${user.uid}:toggle`}
+                    on:click={() => toggleUser(user)}
+                  >
+                    {user.enabled ? 'Disable' : 'Enable'}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="danger"
+                    loading={busy === `${user.uid}:delete`}
+                    disabled={!!busy && busy !== `${user.uid}:delete`}
+                    on:click={() => deleteUser(user)}
+                  >
+                    Delete
+                  </Button>
+                </div>
+              </td>
             </tr>
-          </thead>
-          <tbody>
-            {#each users as user (user.uid)}
-              <tr>
-                <td>
-                  <div class="font-medium" title={user.displayName || user.uid}>
-                    {user.displayName || user.uid}
-                  </div>
-                  <div class="font-mono text-xs text-gray-500" title={user.uid}>{user.uid}</div>
-                </td>
-                <td class="whitespace-nowrap text-gray-300" title={user.email || ''}>
-                  {user.email || '—'}
-                </td>
-                <td>
-                  <div class="flex flex-wrap gap-1">
-                    {#each user.groups as group (group)}
-                      <span class="badge badge-neutral">{group}</span>
-                    {/each}
-                  </div>
-                </td>
-                <td>
-                  <StatusBadge
-                    state={user.enabled ? 'active' : 'disabled'}
-                    label={user.enabled ? 'Active' : 'Disabled'}
-                  />
-                </td>
-                <td>
-                  <div class="flex flex-wrap gap-2">
-                    <Button size="sm" variant="secondary" on:click={() => editUser(user)}>
-                      Edit
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      loading={busy === `${user.uid}:toggle`}
-                      disabled={!!busy && busy !== `${user.uid}:toggle`}
-                      on:click={() => toggleUser(user)}
-                    >
-                      {user.enabled ? 'Disable' : 'Enable'}
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="danger"
-                      loading={busy === `${user.uid}:delete`}
-                      disabled={!!busy && busy !== `${user.uid}:delete`}
-                      on:click={() => deleteUser(user)}
-                    >
-                      Delete
-                    </Button>
-                  </div>
-                </td>
-              </tr>
-            {/each}
-          </tbody>
-        </table>
-      </DataTable>
-    {/if}
+          {/each}
+        </tbody>
+      </table>
+    </DataTable>
   </AsyncState>
 </div>
 

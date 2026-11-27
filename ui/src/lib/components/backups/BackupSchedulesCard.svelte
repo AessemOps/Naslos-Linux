@@ -140,7 +140,7 @@
     </p>
   {:else}
     <div class="mb-4">
-      <DataTable>
+      <DataTable label="Backup schedules">
         <table>
           <thead>
             <tr>

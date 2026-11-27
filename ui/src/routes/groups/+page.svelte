@@ -3,7 +3,6 @@
   import { api } from '$lib/api';
   import AsyncState from '$lib/components/AsyncState.svelte';
   import Button from '$lib/components/Button.svelte';
-  import EmptyState from '$lib/components/EmptyState.svelte';
   import GroupForm from '$lib/components/GroupForm.svelte';
   import PageHeader from '$lib/components/PageHeader.svelte';
   import { confirmAction } from '$lib/stores/confirm';
@@ -116,56 +115,58 @@
     <div role="alert" class="callout callout-bad">{actionError}</div>
   {/if}
 
-  <AsyncState {loading} error={loadError} loadingText="Loading groups..." onRetry={loadGroups}>
-    {#if groups.length === 0}
-      <EmptyState
-        icon="users"
-        title="No Groups"
-        detail="Create groups to organize users and control access."
-      >
-        <Button slot="action" on:click={newGroup}>Create Group</Button>
-      </EmptyState>
-    {:else}
-      <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
-        {#each groups as group (group.cn)}
-          <div class="card">
-            <div class="mb-3 flex flex-wrap items-start justify-between gap-3">
-              <div class="min-w-0">
-                <h2 class="text-lg font-bold">{group.cn}</h2>
-                {#if group.description}
-                  <p class="text-sm text-gray-400">{group.description}</p>
-                {/if}
-              </div>
-              <div class="flex flex-wrap gap-2">
-                <Button size="sm" variant="secondary" on:click={() => editGroup(group)}>
-                  Edit
-                </Button>
-                <Button
-                  size="sm"
-                  variant="danger"
-                  loading={deleting === group.cn}
-                  disabled={!!deleting && deleting !== group.cn}
-                  on:click={() => deleteGroup(group)}
-                >
-                  Delete
-                </Button>
-              </div>
+  <AsyncState
+    {loading}
+    error={loadError}
+    empty={groups.length === 0}
+    loadingText="Loading groups..."
+    emptyIcon="users"
+    emptyTitle="No Groups"
+    emptyDetail="Create groups to organize users and control access."
+    onRetry={loadGroups}
+  >
+    <svelte:fragment slot="emptyAction">
+      <Button on:click={newGroup}>Create Group</Button>
+    </svelte:fragment>
+    <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+      {#each groups as group (group.cn)}
+        <div class="card">
+          <div class="mb-3 flex flex-wrap items-start justify-between gap-3">
+            <div class="min-w-0">
+              <h2 class="text-lg font-bold">{group.cn}</h2>
+              {#if group.description}
+                <p class="text-sm text-gray-400">{group.description}</p>
+              {/if}
             </div>
-
-            <div class="mb-2 text-sm text-gray-400">
-              {group.members.length} member{group.members.length !== 1 ? 's' : ''}
+            <div class="flex flex-wrap gap-2">
+              <Button size="sm" variant="secondary" on:click={() => editGroup(group)}>
+                Edit
+              </Button>
+              <Button
+                size="sm"
+                variant="danger"
+                loading={deleting === group.cn}
+                disabled={!!deleting && deleting !== group.cn}
+                on:click={() => deleteGroup(group)}
+              >
+                Delete
+              </Button>
             </div>
-            {#if group.members.length > 0}
-              <div class="flex flex-wrap gap-1">
-                {#each group.members as member (member)}
-                  <span class="badge badge-neutral">{shortName(member)}</span>
-                {/each}
-              </div>
-            {/if}
           </div>
-        {/each}
-      </div>
-    {/if}
+
+          <div class="mb-2 text-sm text-gray-400">
+            {group.members.length} member{group.members.length !== 1 ? 's' : ''}
+          </div>
+          {#if group.members.length > 0}
+            <div class="flex flex-wrap gap-1">
+              {#each group.members as member (member)}
+                <span class="badge badge-neutral">{shortName(member)}</span>
+              {/each}
+            </div>
+          {/if}
+        </div>
+      {/each}
+    </div>
   </AsyncState>
 </div>
 

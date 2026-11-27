@@ -1,6 +1,6 @@
 <script lang="ts">
   import { createEventDispatcher, onMount } from 'svelte';
-  import { api, ApiError } from '$lib/api';
+  import { api } from '$lib/api';
   import Button from '$lib/components/Button.svelte';
   import FormField from '$lib/components/FormField.svelte';
   import Modal from '$lib/components/Modal.svelte';
@@ -58,7 +58,11 @@
   }
 
   function failMessage(e: unknown, fallback: string): string {
-    return e instanceof ApiError ? e.message : fallback;
+    return e instanceof Error ? e.message : fallback;
+  }
+
+  function errorDetail(e: unknown): string {
+    return e instanceof Error ? e.message : String(e);
   }
 
   async function save() {
@@ -94,7 +98,10 @@
               body: JSON.stringify({ password })
             });
           } catch (e) {
-            throw new Error(failMessage(e, 'User saved, but the password change failed'));
+            // Keep the partial-failure prefix: the profile PUT above already
+            // succeeded, so "Failed to save user" would be wrong and a retry
+            // would only repeat the password failure.
+            throw new Error(`User saved, but the password change failed: ${errorDetail(e)}`);
           }
         }
       }
