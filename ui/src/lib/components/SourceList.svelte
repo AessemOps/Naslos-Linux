@@ -18,14 +18,17 @@
 
   let sources: Source[] = [];
   let loading = true;
-  let error = '';
+  // A load failure blocks the page; a refresh/remove failure keeps the last
+  // good list and is reported inline.
+  let loadError = '';
+  let actionError = '';
   let refreshing = false;
   let removing = '';
   let showForm = false;
 
   async function load() {
     loading = true;
-    error = '';
+    loadError = '';
     try {
       const res = await fetch('/api/sources');
       if (!res.ok) {
@@ -34,8 +37,7 @@
       const data = await res.json();
       sources = Array.isArray(data) ? data : [];
     } catch (e) {
-      error = 'Failed to load sources: ' + e;
-      sources = [];
+      loadError = 'Failed to load sources: ' + e;
     } finally {
       loading = false;
     }
@@ -43,7 +45,7 @@
 
   async function refresh() {
     refreshing = true;
-    error = '';
+    actionError = '';
     try {
       const res = await fetch('/api/sources/refresh', { method: 'POST' });
       const data = await res.json().catch(() => ({}));
@@ -52,7 +54,7 @@
       }
       await load();
     } catch (e: any) {
-      error = 'Refresh failed: ' + e.message;
+      actionError = 'Refresh failed: ' + e.message;
     } finally {
       refreshing = false;
     }
@@ -67,6 +69,7 @@
     });
     if (!confirmed) return;
     removing = name;
+    actionError = '';
     try {
       const res = await fetch(`/api/sources/${encodeURIComponent(name)}`, { method: 'DELETE' });
       if (!res.ok) {
@@ -74,7 +77,7 @@
       }
       await load();
     } catch (e) {
-      error = `Failed to remove ${name}: ` + e;
+      actionError = `Failed to remove ${name}: ` + e;
     } finally {
       removing = '';
     }
@@ -98,8 +101,8 @@
   </div>
 
   <AsyncState
-    {loading}
-    error={error}
+    loading={loading && sources.length === 0}
+    error={sources.length === 0 ? loadError : ''}
     empty={!loading && sources.length === 0}
     loadingText="Loading sources..."
     emptyTitle="No Chart Repositories"
@@ -107,6 +110,15 @@
     emptyIcon="link"
     onRetry={load}
   >
+    {#if loadError && sources.length > 0}
+      <div role="alert" class="callout callout-bad flex flex-wrap items-center justify-between gap-2">
+        <span>{loadError}</span>
+        <Button variant="secondary" size="sm" on:click={load}>Retry</Button>
+      </div>
+    {/if}
+    {#if actionError}
+      <div role="alert" class="callout callout-bad">{actionError}</div>
+    {/if}
     <div class="space-y-3">
       {#each sources as source (source.name)}
         <div class="card flex flex-wrap items-center gap-4">

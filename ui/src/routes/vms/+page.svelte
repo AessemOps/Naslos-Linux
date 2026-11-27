@@ -302,8 +302,8 @@
   {/if}
 
   <AsyncState
-    loading={loading}
-    error={featureError}
+    loading={loading && vms.length === 0}
+    error={vms.length === 0 ? featureError : ''}
     empty={!loading && !featureError && vms.length === 0}
     loadingText="Loading virtual machines…"
     emptyTitle="No virtual machines yet"
@@ -311,7 +311,13 @@
     emptyIcon="monitor"
     onRetry={loadAll}
   >
-    <DataTable>
+    {#if featureError && vms.length > 0}
+      <div role="alert" class="callout callout-bad flex flex-wrap items-center justify-between gap-2">
+        <span>{featureError}</span>
+        <Button variant="secondary" size="sm" loading={refreshing} on:click={refresh}>Retry</Button>
+      </div>
+    {/if}
+    <DataTable label="Virtual machines">
       <table>
         <thead>
           <tr>

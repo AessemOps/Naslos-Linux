@@ -348,14 +348,21 @@
 
 <AsyncState
   loading={loading && apps.length === 0}
-  error={error}
+  error={apps.length === 0 ? error : ''}
   empty={!loading && apps.length === 0}
   loadingText="Loading installed apps..."
   emptyTitle="No Apps Installed"
   emptyDetail="Browse the catalog to install your first app."
   emptyIcon="package"
   onRetry={() => loadApps(true)}
+
 >
+  {#if error && apps.length > 0}
+    <div role="alert" class="callout callout-bad flex flex-wrap items-center justify-between gap-2">
+      <span>{error}</span>
+      <Button variant="secondary" size="sm" on:click={() => loadApps(true)}>Retry</Button>
+    </div>
+  {/if}
   <div class="mb-3 flex flex-wrap items-center justify-between gap-3">
     <div class="text-sm text-gray-400">
       <span class="font-medium text-gray-200">{apps.length} apps</span>
