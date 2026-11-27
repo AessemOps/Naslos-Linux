@@ -28,36 +28,44 @@
   ];
 </script>
 
-<div class="max-w-4xl mx-auto">
+<div class="mx-auto max-w-6xl">
   <PageHeader title="Settings" subtitle="Every configuration area in one place." />
 
-  <div class="card mb-6 flex flex-wrap items-center justify-between gap-4">
-    <div class="flex items-center gap-4">
+  <section class="card mb-6 flex flex-wrap items-center justify-between gap-4" aria-labelledby="settings-appearance">
+    <div class="flex min-w-0 flex-1 items-center gap-4">
       <div
-        class="w-12 h-12 rounded-full bg-naslos-dark border border-naslos-border flex items-center justify-center text-gray-400 shrink-0"
+        class="flex h-12 w-12 shrink-0 items-center justify-center rounded-full border border-naslos-border bg-naslos-dark text-gray-400"
         aria-hidden="true"
       >
         <Icon name={$theme === 'light' ? 'sun' : 'moon'} size={24} />
       </div>
       <div class="min-w-0">
-        <h2 class="font-bold">Appearance</h2>
-        <p class="text-sm text-gray-400 mt-0.5">
+        <h2 id="settings-appearance" class="font-bold">Appearance</h2>
+        <p class="mt-0.5 text-sm text-gray-400">
           Theme: {$theme === 'light' ? 'Light' : 'Dark'}. The choice is remembered on this
           browser; new visitors start from the system preference.
         </p>
       </div>
     </div>
     <ThemeToggle />
-  </div>
+  </section>
 
   <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
     {#each sections as section (section.href)}
-      <a href={section.href} class="card hover:border-naslos-accent transition-colors">
-        <div class="text-gray-400 mb-2" aria-hidden="true">
-          <Icon name={section.icon} size={24} />
+      <a
+        href={section.href}
+        class="card flex items-start gap-4 transition-colors hover:border-naslos-accent"
+      >
+        <div
+          class="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-naslos-border bg-naslos-dark text-gray-400"
+          aria-hidden="true"
+        >
+          <Icon name={section.icon} size={20} />
         </div>
-        <h2 class="font-bold">{section.title}</h2>
-        <p class="text-sm text-gray-400 mt-1">{section.detail}</p>
+        <div class="min-w-0">
+          <h2 class="font-bold">{section.title}</h2>
+          <p class="mt-1 text-sm text-gray-400">{section.detail}</p>
+        </div>
       </a>
     {/each}
   </div>
