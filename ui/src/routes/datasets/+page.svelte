@@ -26,7 +26,8 @@
   let zfs: ZfsDataset[] = [];
   let loading = true;
   let saving = false;
-  let loadError = '';
+  let registryError = '';
+  let datasetsError = '';
   let formError = '';
   let success = '';
 
@@ -58,24 +59,37 @@
     if (!name) name = suggestName(path);
   }
 
-  async function load() {
-    loading = true;
-    loadError = '';
+  // The registry list and the dataset picker are independent: a failure on
+  // one must not discard the other response or merge their error messages.
+  async function loadRegistry() {
     try {
-      const [registry, datasets] = await Promise.all([
-        api<ManagedDataset[]>('/api/datasets/registry'),
-        api<ZfsDataset[]>('/api/datasets')
-      ]);
-      managed = registry;
-      zfs = datasets;
+      managed = await api<ManagedDataset[]>('/api/datasets/registry');
+      registryError = '';
     } catch (e) {
-      loadError =
+      registryError =
         e instanceof ApiError
-          ? `Failed to load datasets (HTTP ${e.status})`
+          ? `Failed to load registered datasets (HTTP ${e.status})`
           : 'Failed to connect to the API';
-    } finally {
-      loading = false;
     }
+  }
+
+  async function loadDatasets() {
+    try {
+      zfs = await api<ZfsDataset[]>('/api/datasets');
+      datasetsError = '';
+    } catch (e) {
+      datasetsError =
+        e instanceof ApiError
+          ? `Failed to load mountable ZFS datasets (HTTP ${e.status})`
+          : 'Failed to connect to the API';
+    }
+  }
+
+  async function load() {
+    // Retries set loading=true again; both requests still run independently.
+    loading = true;
+    await Promise.all([loadRegistry(), loadDatasets()]);
+    loading = false;
   }
 
   async function save() {
@@ -156,7 +170,7 @@
     <h2 class="mb-4 text-xl font-bold">Register a dataset</h2>
     <form on:submit|preventDefault={save} class="space-y-4">
       <div class="grid gap-4 md:grid-cols-2">
-        <FormField label="ZFS dataset" id="dataset-path" required>
+        <FormField label="ZFS dataset" id="dataset-path" required error={datasetsError}>
           <select
             id="dataset-path"
             class="input w-full"
@@ -213,9 +227,14 @@
   </div>
 
   <h2 class="mb-4 text-xl font-bold">Registered datasets</h2>
+  {#if registryError && managed.length > 0}
+    <div role="alert" class="callout callout-bad">
+      Could not refresh the registry; showing the last known list. {registryError}
+    </div>
+  {/if}
   <AsyncState
     {loading}
-    error={loadError}
+    error={managed.length === 0 ? registryError : ''}
     empty={managed.length === 0}
     loadingText="Loading…"
     emptyTitle="No datasets are registered yet."

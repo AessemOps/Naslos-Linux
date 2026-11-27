@@ -6,7 +6,6 @@
   import { api, ApiError } from '$lib/api';
   import AsyncState from '$lib/components/AsyncState.svelte';
   import Button from '$lib/components/Button.svelte';
-  import EmptyState from '$lib/components/EmptyState.svelte';
   import Modal from '$lib/components/Modal.svelte';
   import { formatBytes } from '$lib/format';
 

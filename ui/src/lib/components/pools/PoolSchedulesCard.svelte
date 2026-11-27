@@ -23,6 +23,7 @@
   export let schedules: StorageSchedule[] = [];
   export let poolName = '';
   export let scheduleableDatasets: Array<{ name: string }> = [];
+  export let scrubRunning = false;
 
   const dispatch = createEventDispatcher<{
     scrub: void;
@@ -70,7 +71,15 @@
         {/if}
       </div>
       <div class="flex flex-wrap gap-1">
-        <Button variant="secondary" size="sm" on:click={() => dispatch('scrub')}>Scrub now</Button>
+        <Button
+          variant="secondary"
+          size="sm"
+          loading={scrubRunning}
+          disabled={scrubRunning}
+          on:click={() => dispatch('scrub')}
+        >
+          Scrub now
+        </Button>
         {#if scrubSchedule}
           <Button
             variant="danger"

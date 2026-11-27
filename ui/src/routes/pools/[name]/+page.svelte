@@ -130,9 +130,11 @@
     showAddDriveModal = false;
   }
 
-  async function loadHealth() {
+  async function loadHealth(background = false) {
     const requested = poolName;
-    loading = true;
+    // A refresh after scrub/add-drive keeps the last good snapshot visible; a
+    // retry or pool change shows the loader.
+    if (!background || !health) loading = true;
     error = '';
     try {
       const data = await api<PoolHealth>(`/api/volumes/zfs/${encodeURIComponent(requested)}/health`);
@@ -368,7 +370,7 @@
         method: 'POST'
       });
       scrubMessage = 'Scrub started. Its result appears in the scan status above.';
-      await loadHealth();
+      await loadHealth(true);
     } catch (e) {
       scrubMessage = message(e, 'Could not start the scrub.');
       scrubError = true;
@@ -419,8 +421,18 @@
   {#if schedulesError}
     <ErrorState message={schedulesError} retry={loadSchedules} />
   {/if}
+  {#if health && error}
+    <div role="alert" class="callout callout-bad">
+      Could not refresh the health snapshot; showing the last known state. {error}
+    </div>
+  {/if}
 
-  <AsyncState {loading} error={error} loadingText="Loading health data..." onRetry={loadHealth}>
+  <AsyncState
+    {loading}
+    error={health ? '' : error}
+    loadingText="Loading health data..."
+    onRetry={() => loadHealth()}
+  >
     {#if health}
       <PoolHealthSummary {health} />
 
@@ -445,23 +457,22 @@
         on:delete={(e) => deleteZvol(e.detail)}
       />
 
-      {#if !schedulesError}
-        <PoolSchedulesCard
-          {schedules}
-          {poolName}
-          {scheduleableDatasets}
-          on:scrub={runScrubNow}
-          on:scrubEdit={() =>
-            openSchedule(
-              'scrub',
-              poolName,
-              schedules.find((s) => s.kind === 'scrub' && s.target === poolName) ?? null
-            )}
-          on:addSnapshot={() => openSchedule('snapshot', scheduleableDatasets[0]?.name ?? '', null)}
-          on:edit={(e) => openSchedule(e.detail.kind, e.detail.target, e.detail)}
-          on:remove={(e) => removeSchedule(e.detail)}
-        />
-      {/if}
+      <PoolSchedulesCard
+        {schedules}
+        {poolName}
+        {scheduleableDatasets}
+        {scrubRunning}
+        on:scrub={runScrubNow}
+        on:scrubEdit={() =>
+          openSchedule(
+            'scrub',
+            poolName,
+            schedules.find((s) => s.kind === 'scrub' && s.target === poolName) ?? null
+          )}
+        on:addSnapshot={() => openSchedule('snapshot', scheduleableDatasets[0]?.name ?? '', null)}
+        on:edit={(e) => openSchedule(e.detail.kind, e.detail.target, e.detail)}
+        on:remove={(e) => removeSchedule(e.detail)}
+      />
     {/if}
   </AsyncState>
 </div>
@@ -521,7 +532,7 @@
     onClose={() => (showAddDriveModal = false)}
     onAdded={() => {
       showAddDriveModal = false;
-      void Promise.all([loadHealth(), loadDatasets()]);
+      void Promise.all([loadHealth(true), loadDatasets()]);
     }}
   />
 {/if}

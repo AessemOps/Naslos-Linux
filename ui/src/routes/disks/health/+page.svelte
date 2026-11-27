@@ -63,8 +63,16 @@
   let lastUpdated = '';
   let timer: ReturnType<typeof setInterval> | undefined;
 
-  async function load() {
-    refreshing = true;
+  // `background` is a poll or the Refresh button: keep the last good table on
+  // screen. A retry after a failed first load (no data yet) shows the loader,
+  // so the empty state never flashes while SMART data is still in flight.
+  async function load(background = false) {
+    if (background && data) {
+      refreshing = true;
+    } else {
+      loading = true;
+      refreshing = true;
+    }
     error = '';
     try {
       const res = await fetch('/api/disks/health');
@@ -79,8 +87,8 @@
   }
 
   onMount(() => {
-    load();
-    timer = setInterval(load, 60_000);
+    void load();
+    timer = setInterval(() => void load(true), 60_000);
   });
   onDestroy(() => {
     if (timer) clearInterval(timer);
@@ -167,7 +175,7 @@
   >
     <div slot="actions" class="flex flex-wrap items-center gap-3">
       {#if lastUpdated}<span class="text-xs text-gray-500">Updated {lastUpdated}</span>{/if}
-      <Button variant="secondary" loading={refreshing} on:click={load}>Refresh</Button>
+      <Button variant="secondary" loading={refreshing} on:click={() => load(true)}>Refresh</Button>
     </div>
   </PageHeader>
 
@@ -180,15 +188,21 @@
     </div>
   {/if}
 
+  {#if data && error}
+    <div role="alert" class="callout callout-bad">
+      Refresh failed; showing the last successful reading. {error}
+    </div>
+  {/if}
+
   <AsyncState
     {loading}
-    error={error}
-    empty={disks.length === 0}
+    error={data ? '' : error}
+    empty={!!data && disks.length === 0}
     loadingText="Loading disk health…"
     emptyTitle="No whole disks were reported by the node."
     emptyDetail="Only whole disks are listed; partitions and virtual devices are not."
     emptyIcon="hard-drive"
-    onRetry={load}
+    onRetry={() => load()}
   >
     <div class="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-5">
       <div class="rounded-lg border border-naslos-border bg-naslos-surface p-4">
@@ -213,7 +227,7 @@
       </div>
     </div>
 
-    <DataTable>
+    <DataTable label="Disk health">
       <table>
         <thead>
           <tr>

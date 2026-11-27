@@ -164,18 +164,20 @@
         createResult = 'Pool created successfully!';
         step = 4;
       } else {
-        let detail: string;
+        // A non-2xx body is not necessarily JSON, so read it directly instead
+        // of via parseJsonSafe (which throws on the status and loses `error`).
+        let detail = `Creating pool failed (HTTP ${res.status})`;
         try {
-          const data = await parseJsonSafe<{ error?: string }>(res, 'Creating pool');
-          detail = data.error || 'Unknown error';
-        } catch (e) {
-          detail = String(e);
+          const data = await res.json();
+          if (data && typeof data.error === 'string' && data.error) detail = data.error;
+        } catch {
+          // Non-JSON error body: the status line above is still useful.
         }
-        createResult = 'Error: ' + detail;
+        createResult = `Error: ${detail}`;
         createFailed = true;
       }
     } catch (e) {
-      createResult = 'Error: ' + e;
+      createResult = `Error: ${e instanceof Error ? e.message : String(e)}`;
       createFailed = true;
     } finally {
       creating = false;
@@ -263,8 +265,8 @@
         {#if selectableDisks.length === 0}
           <EmptyState
             icon="hard-drive"
-            title="No usable disks found."
-            detail="Every disk reported by the node is a system disk or is already in a pool. Add or free a disk, then scan again."
+            title="No non-system disks were reported by the node."
+            detail="Add or free a disk, then scan again."
           >
             <svelte:fragment slot="action">
               <Button variant="secondary" on:click={loadDisks}>Scan again</Button>

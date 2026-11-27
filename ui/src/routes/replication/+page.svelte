@@ -70,6 +70,7 @@
   let datasetsError = '';
   let jobs: ReplicationJob[] = [];
   let jobsError = '';
+  let jobsLoaded = false;
   let actionError = '';
 
   let showModal = false;
@@ -165,11 +166,17 @@
   async function loadJobs(quiet = false) {
     if (jobsInFlight) return;
     jobsInFlight = true;
-    if (!quiet) refreshing = true;
+    // A retry after a failed first load shows the loader; a refresh or poll
+    // over an already-loaded list keeps that list on screen.
+    if (!quiet) {
+      refreshing = true;
+      if (!jobsLoaded) loading = true;
+    }
     try {
       const data = await api<{ jobs?: ReplicationJob[] }>('/api/replication/jobs');
       jobs = Array.isArray(data.jobs) ? data.jobs : [];
       jobsError = '';
+      jobsLoaded = true;
     } catch (e) {
       jobsError =
         e instanceof ApiError
@@ -178,6 +185,7 @@
     } finally {
       jobsInFlight = false;
       refreshing = false;
+      if (!quiet) loading = false;
     }
   }
 
@@ -298,10 +306,15 @@
   {#if actionError}
     <div role="alert" class="callout callout-bad">{actionError}</div>
   {/if}
+  {#if jobsLoaded && jobsError}
+    <div role="alert" class="callout callout-bad">
+      Could not refresh the job list; showing the last known state. {jobsError}
+    </div>
+  {/if}
 
   <AsyncState
     {loading}
-    error={jobsError}
+    error={jobsLoaded ? '' : jobsError}
     loadingText="Loading replication jobs…"
     onRetry={() => loadJobs()}
   >
