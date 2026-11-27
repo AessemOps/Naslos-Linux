@@ -46,6 +46,7 @@
     loaded = false;
     loadError = '';
     error = '';
+    let loadedExposure = false;
     try {
       const res = await fetch(`/api/apps/${encodeURIComponent(appName)}/exposure`);
       if (!res.ok) {
@@ -57,17 +58,25 @@
       selectableDomains = Array.isArray(data.selectableDomains) ? data.selectableDomains : [];
       ssoDomains = Array.isArray(data.ssoDomains) ? data.ssoDomains : [];
       loaded = true;
-      const servicesRes = await fetch(`/api/apps/${encodeURIComponent(appName)}/services`);
-      if (servicesRes.ok) {
-        const discovered = await servicesRes.json();
-        services = Array.isArray(discovered) ? discovered : [];
-      }
+      loadedExposure = true;
     } catch (e) {
       // Never leave an editable default exposure behind: saving it would
       // silently unexpose the app.
       loadError = 'Failed to load exposure: ' + (e instanceof Error ? e.message : String(e));
     } finally {
       loading = false;
+    }
+    if (!loadedExposure) return;
+    // The service list only feeds the optional service picker; a failure there
+    // must not turn a loaded exposure into an error page.
+    try {
+      const servicesRes = await fetch(`/api/apps/${encodeURIComponent(appName)}/services`);
+      if (servicesRes.ok) {
+        const discovered = await servicesRes.json();
+        services = Array.isArray(discovered) ? discovered : [];
+      }
+    } catch {
+      // Keep the existing list; the picker remains usable with free text.
     }
   }
 

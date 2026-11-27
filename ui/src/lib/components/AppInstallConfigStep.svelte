@@ -25,25 +25,10 @@
   export let retryDatasets: () => void = () => {};
   export let retryPools: () => void = () => {};
 
-  // Naslos datasets are group-owned by `naslos_users` (10000). The schema's
-  // upstream default (1000) cannot read them, so offer the platform groups.
-  // Apply the dataset owner once when the first dataset is selected; the user
-  // can still change PUID/PGID afterwards.
-  let datasetOwnerApplied = false;
-
   $: envSupported = app.capabilities?.includes('env') ?? false;
   $: sharedSelected = managedDatasets.filter(
     (d) => d.shared && selectedDatasets.includes(d.name)
   );
-
-  $: if (selectedDatasets.length > 0 && !datasetOwnerApplied) {
-    datasetOwnerApplied = true;
-    const props = app.schema?.properties ?? {};
-    const next = { ...values };
-    if (props.pgid && Number(next.pgid ?? 0) === Number(props.pgid.default ?? 0)) next.pgid = 10000;
-    if (props.puid && Number(next.puid ?? 0) === Number(props.puid.default ?? 0)) next.puid = 10001;
-    values = next;
-  }
 </script>
 
 <div class="space-y-4">

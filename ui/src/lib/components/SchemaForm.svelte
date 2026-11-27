@@ -128,14 +128,14 @@
         <select
           id="field-{key}"
           class="input w-full"
-          value={String(currentGroup(key, prop))}
+          value={String(Number(values[key] ?? prop.default ?? 0))}
           on:change={(e) => updateValue(key, Number(e.currentTarget.value))}
         >
           {#each groupOptions as option}
             <option value={String(option.value)}>{option.label}</option>
           {/each}
           {#if !groupOptions.some((option) => option.value === currentGroup(key, prop))}
-            <option value={String(currentGroup(key, prop))}>custom ({currentGroup(key, prop)})</option>
+            <option value={String(Number(values[key] ?? prop.default ?? 0))}>custom ({currentGroup(key, prop)})</option>
           {/if}
         </select>
       </FormField>

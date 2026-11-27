@@ -498,7 +498,7 @@
   emptyIcon="hard-drive"
   onRetry={load}
 >
-  <DataTable>
+  <DataTable label="Image library">
     <table>
       <thead>
         <tr>

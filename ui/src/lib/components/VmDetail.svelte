@@ -197,7 +197,7 @@
         {#if vm.net.mode === 'nat' && vm.net.forwards?.length}
           <div>
             <h3 class="text-sm font-semibold text-gray-300 mb-2">Port forwards (reachable on the node)</h3>
-            <DataTable>
+            <DataTable label="Port forwards">
               <table>
                 <thead>
                   <tr><th scope="col">Forward</th></tr>
@@ -244,7 +244,7 @@
               <Button variant="secondary" size="sm" on:click={loadSnapshots}>Retry</Button>
             </div>
           {:else}
-            <DataTable>
+            <DataTable label="Snapshots">
               <table>
                 <thead>
                   <tr>

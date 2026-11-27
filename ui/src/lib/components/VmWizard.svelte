@@ -191,7 +191,7 @@
         <input id="vm-cpu" type="number" min="1" max="64" class="input w-full" bind:value={form.cpu} />
       </FormField>
       <FormField label="Memory (MiB)" id="vm-mem">
-        <input id="vm-mem" type="number" min="16" step="16" class="input w-full" bind:value={form.memMiB} />
+        <input id="vm-mem" type="number" min="16" class="input w-full" bind:value={form.memMiB} />
       </FormField>
     </div>
 

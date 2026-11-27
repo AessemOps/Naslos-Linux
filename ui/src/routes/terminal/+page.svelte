@@ -44,6 +44,7 @@
   let term: Terminal;
   let fitAddon: FitAddon;
   let ws: WebSocket | null = null;
+  let destroyed = false;
 
   let namespaces: string[] = [];
   let namespace = 'naslos';
@@ -257,7 +258,7 @@
     // Fira Code may finish loading after the first measure; refit so the
     // mobile console does not keep the fallback font's wider cell grid.
     document.fonts?.ready.then(() => {
-      if (!term) return;
+      if (destroyed) return;
       fitAddon.fit();
       sendSize();
     });
@@ -286,6 +287,7 @@
     });
 
     return () => {
+      destroyed = true;
       unsubscribeTheme();
       disconnect();
       term.dispose();
