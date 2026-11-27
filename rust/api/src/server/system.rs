@@ -821,6 +821,16 @@ mod tests {
     }
 
     #[test]
+    fn an_uncounted_succeeded_pod_alone_is_terminal() {
+        // Without a condition: the pod completed but the Job controller never
+        // counted it. This is the branch the lock must release on its own.
+        let status = serde_json::json!({
+            "uncountedTerminatedPods": {"succeeded": ["906cfad1-6e2e-4e64-a7f2-2f7009846327"]}
+        });
+        assert_eq!(job_phase(&status), "succeeded");
+    }
+
+    #[test]
     fn a_finished_job_with_an_uncounted_pod_is_terminal() {
         // The 0.7.6 upgrader Job: the pod completed, but the Job never counted
         // it and has no Complete condition. It must not hold the lock.

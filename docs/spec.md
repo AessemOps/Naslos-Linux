@@ -1988,6 +1988,7 @@ A node installed from an installer pack can be upgraded from the web UI. A
   pod, `Failed`, `FailureTarget`) or whose completed pod is only in
   `uncountedTerminatedPods` MUST NOT keep the lock, even when Kubernetes did
   not record `status.succeeded`/`failed`. *(tests:
+  `system::tests::an_uncounted_succeeded_pod_alone_is_terminal`,
   `system::tests::a_finished_job_with_an_uncounted_pod_is_terminal`,
   `system::tests::job_phase_reads_counts_and_conditions`)*
 - **FR-UPD-09** — The API MUST expose admin-only `GET /api/system/version`,
