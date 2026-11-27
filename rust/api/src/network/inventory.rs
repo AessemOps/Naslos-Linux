@@ -246,7 +246,15 @@ fn physical_links(values: &[serde_json::Value]) -> Vec<LinkRow> {
         let Some(spec) = value.get("spec") else {
             continue;
         };
-        let name = text(spec, &["name", "linkName"]);
+        // Talos LinkStatus resources carry the link name in metadata.id and
+        // leave spec.name empty; older shapes put it in the spec.
+        let mut name = text(spec, &["name", "linkName"]);
+        if name.is_empty() {
+            name = value
+                .get("metadata")
+                .map(|meta| text(meta, &["id"]))
+                .unwrap_or_default();
+        }
         if name.is_empty() {
             continue;
         }
@@ -262,7 +270,7 @@ fn physical_links(values: &[serde_json::Value]) -> Vec<LinkRow> {
         links.push(LinkRow {
             name: name.clone(),
             kind,
-            up: spec.get("up").and_then(|v| v.as_bool()).unwrap_or(true),
+            up: link_up(spec),
             mac: text(spec, &["hardwareAddr", "mac", "permanentAddr"]),
             mtu: spec
                 .get("mtu")
@@ -273,6 +281,21 @@ fn physical_links(values: &[serde_json::Value]) -> Vec<LinkRow> {
     }
     links.sort_by(|a, b| a.name.cmp(&b.name));
     links
+}
+
+/// Talos reports carrier as `linkState` and the kernel state as
+/// `operationalState`; `up` is the legacy shape. An `unknown` (or absent)
+/// state stays up: drivers that expose no operstate report `unknown`.
+fn link_up(spec: &serde_json::Value) -> bool {
+    if let Some(state) = spec.get("linkState").and_then(|v| v.as_bool()) {
+        return state;
+    }
+    if let Some(state) = spec.get("operationalState").and_then(|v| v.as_str()) {
+        if !state.is_empty() && !state.eq_ignore_ascii_case("unknown") {
+            return state.eq_ignore_ascii_case("up");
+        }
+    }
+    spec.get("up").and_then(|v| v.as_bool()).unwrap_or(true)
 }
 
 fn infer_kind(name: &str) -> String {
@@ -524,6 +547,37 @@ mod tests {
         )
         .unwrap();
         assert_eq!(physical_link_names(&values), vec!["eth0".to_string()]);
+    }
+
+    #[test]
+    fn talos_link_status_names_come_from_metadata() {
+        // Shape of a live Talos 1.14 LinkStatus: the name is metadata.id,
+        // spec.kind is empty for a physical NIC and spec.type is "ether".
+        let values: Vec<serde_json::Value> = serde_json::from_str(
+            r#"[
+              {"metadata":{"id":"lo"},"spec":{"kind":"","type":"loopback","linkState":true}},
+              {"metadata":{"id":"enp2s0"},"spec":{"kind":"","type":"ether","linkState":false,
+                "operationalState":"down","hardwareAddr":"aa:bb:cc:dd:ee:02","mtu":1500}},
+              {"metadata":{"id":"enp1s0"},"spec":{"kind":"","type":"ether","linkState":true,
+                "operationalState":"up","hardwareAddr":"aa:bb:cc:dd:ee:01","mtu":1500}}
+            ]"#,
+        )
+        .unwrap();
+        let links = physical_links(&values);
+        let names: Vec<&str> = links.iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(names, vec!["enp1s0", "enp2s0"]);
+        assert!(links[0].up);
+        assert!(!links[1].up, "linkState=false must not render as up");
+        assert_eq!(links[0].mac, "aa:bb:cc:dd:ee:01");
+        assert_eq!(links[0].mtu, 1500);
+    }
+
+    #[test]
+    fn an_unknown_operational_state_reads_as_up() {
+        let unknown = serde_json::json!({"operationalState": "unknown"});
+        assert!(link_up(&unknown));
+        let down = serde_json::json!({"operationalState": "down"});
+        assert!(!link_up(&down));
     }
 
     #[test]

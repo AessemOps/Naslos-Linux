@@ -1,4 +1,4 @@
-import { test, expect, type APIRequestContext } from '@playwright/test';
+import { test, expect, type APIRequestContext, type APIResponse } from '@playwright/test';
 
 // waitForJob polls the async job endpoint until the job reaches a terminal
 // state (FR-APP-18). Returns the final state.
@@ -44,15 +44,22 @@ async function ensureTestDataset(
   const created = await request.post('/api/datasets', {
     data: { pool: poolRoot.name, name, options: {} }
   });
-  // 409 is a leftover from an interrupted run; the dataset is usable.
-  if (![201, 409].includes(created.status())) return null;
+  // A leftover from an interrupted run is usable. Depending on the path the
+  // API reports it as 409 or as 400 with an "already exists" error.
+  if (!(await isCreatedOrExisting(created))) return null;
 
   const hostPath = `${poolRoot.mountpoint.replace(/\/$/, '')}/${name}`;
   const registered = await request.post('/api/datasets/registry', {
     data: { name, hostPath, shared: false }
   });
-  if (![201, 409].includes(registered.status())) return null;
+  if (!(await isCreatedOrExisting(registered))) return null;
   return { name, dataset };
+}
+
+async function isCreatedOrExisting(response: APIResponse): Promise<boolean> {
+  if ([201, 409].includes(response.status())) return true;
+  if (response.status() !== 400) return false;
+  return /already (exists|registered)/i.test(await response.text());
 }
 
 async function removeTestDataset(request: APIRequestContext, name: string, dataset: string) {
@@ -355,7 +362,9 @@ test.describe('app environment variables', () => {
     await page.goto('/apps');
     await page.getByRole('button', { name: 'Catalog', exact: true }).click();
     await page.getByRole('button', { name: 'Install Env Demo' }).click();
-    await expect(page.getByRole('heading', { name: 'Env Demo' })).toBeVisible();
+    // Scope to the dialog: the catalog card behind it has the same heading
+    // (inert for assistive tech, but Playwright's role engine ignores inert).
+    await expect(page.getByRole('dialog').getByRole('heading', { name: 'Env Demo' })).toBeVisible();
 
     await page.locator('summary', { hasText: 'Environment variables' }).click();
     await page.getByRole('button', { name: '+ Add variable' }).click();
