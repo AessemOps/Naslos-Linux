@@ -183,19 +183,26 @@ recovery ZIP. The headless engine is in the same repo if you prefer a CLI.
 ### On the Naslos node
 
 ```bash
-# Render and install the chart, its CRDs and prerequisites
-make install-vm
+# Once per fresh node: generate the PKI, machine config, and talosconfig
+make bootstrap-vm VM_IP=<node-ip>
 
-# Verify
+# Install the chart, its CRDs and prerequisites
+make install-vm VM_IP=<node-ip>
+
+# Verify (the domain comes from the values-vm.yaml overlay)
 kubectl -n naslos rollout status deploy/naslos-api
-curl -sk https://naslos.example.com/api/health
+DOMAIN=$(sed -n 's/^domain:[[:space:]]*//p' charts/naslos/values-vm.yaml)
+curl -sk "https://$DOMAIN/api/health"
 ```
 
-`make install-vm` renders `values.yaml` plus the node overlay
-`values-vm.yaml` and installs `crds`, `cert-manager`, and the OVH DNS-01 webhook
-first. It is a clean install, not `--reuse-values`, and it needs the node
-`talosconfig` and machine-config patch described in the deployment guide. See
-[docs/deployment.md](docs/deployment.md) for the required values and credentials.
+`VM_IP` has no default. `make install-vm` also needs the
+`bootstrap/vm/talosconfig` that `make bootstrap-vm` writes, plus a node already
+bootstrapped with that machine config; `bootstrap-vm` prints the
+`talosctl apply-config` and `talosctl bootstrap` steps. Then `install-vm`
+renders `values.yaml` plus the node overlay `values-vm.yaml` and installs
+`crds`, `cert-manager`, and the OVH DNS-01 webhook first. It is a clean install,
+not `--reuse-values`. See [docs/deployment.md](docs/deployment.md) for the full
+sequence and the required values and credentials.
 
 ### Local development
 
