@@ -1,119 +1,43 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
-  import LoadingState from '$lib/components/LoadingState.svelte';
-  import Modal from '$lib/components/Modal.svelte';
-
-  interface VersionInfo {
-    naslosVersion: string;
-    chartVersion: string;
-    talosVersion: string;
-    kubernetesVersion: string;
-    releaseTalosVersion: string;
-    releaseKubernetesVersion: string;
-    schematicId: string;
-    profile: string;
-    upgradable: boolean;
-    updatesEnabled: boolean;
-  }
-
-  interface Candidate {
-    version: string;
-    notesUrl: string;
-    body: string;
-    publishedAt: string;
-    talosVersion: string;
-    kubernetesVersion: string;
-    apiImage: string;
-  }
-
-  interface Updates {
-    enabled: boolean;
-    upgradable: boolean;
-    current: string;
-    checkedAt: string;
-    source?: string;
-    available: Candidate | null;
-    stepping: { allowed: boolean; reason: string };
-    blocked: string;
-    error: string;
-  }
-
-  interface Step {
-    name: string;
-    status: string;
-    message: string;
-    startedAt: string;
-    finishedAt: string;
-  }
-
-  interface Operation {
-    id: string;
-    op: string;
-    from: string;
-    to: string;
-    phase: string;
-    steps: Step[];
-    message: string;
-    startedAt: string;
-    finishedAt: string;
-    result: string;
-    attempts: number;
-    log: string;
-  }
+  import AsyncState from '$lib/components/AsyncState.svelte';
+  import PageHeader from '$lib/components/PageHeader.svelte';
+  import NodeCard from '$lib/components/system/NodeCard.svelte';
+  import OperationsCard from '$lib/components/system/OperationsCard.svelte';
+  import UpdatesCard from '$lib/components/system/UpdatesCard.svelte';
+  import VersionsCard from '$lib/components/system/VersionsCard.svelte';
+  import type { Op, Operation, Updates, VersionInfo } from '$lib/components/system/system';
+  import { disabledReason, isActive, opTitle, safeNotesUrl } from '$lib/components/system/system';
+  import { api } from '$lib/api';
+  import { refreshSystemUpdates } from '$lib/stores/systemUpdates';
+  import { confirmAction } from '$lib/stores/confirm';
 
   let version: VersionInfo | null = null;
   let updates: Updates | null = null;
   let operation: Operation | null = null;
   let loading = true;
+  let loadError = '';
   let checking = false;
   let reconnecting = false;
   let message = '';
-  let messageType = '';
-  const ops = ['naslos', 'talos', 'kubernetes'] as const;
-  type Op = (typeof ops)[number];
-  let confirmOp: Op | null = null;
-  let confirmText = '';
+  let messageType: 'success' | 'error' | 'info' = 'success';
   let starting = false;
-  let timer: ReturnType<typeof setTimeout> | undefined; 
-  let rebootConfirm = false;
-  let rebootText = '';
+  let timer: ReturnType<typeof setTimeout> | undefined;
   let rebooting = false;
   let rebootTimer: ReturnType<typeof setTimeout> | undefined;
   let destroyed = false;
 
-  const activePhases = ['pending', 'running', 'rebooting'];
-
-  function isActive(phase?: string): boolean {
-    return !!phase && activePhases.includes(phase);
-  }
-
-  function cmpVersion(a: string, b: string): number {
-    const parse = (v: string) => v.replace(/^v/, '').split('.').map((n) => parseInt(n, 10) || 0);
-    const x = parse(a);
-    const y = parse(b);
-    for (let i = 0; i < 3; i += 1) {
-      if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) - (y[i] ?? 0);
-    }
-    return 0;
-  }
-
   async function loadVersion() {
-    const res = await fetch('/api/system/version');
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    version = await res.json();
+    version = await api<VersionInfo>('/api/system/version');
   }
 
   async function loadUpdates() {
-    const res = await fetch('/api/system/updates');
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    updates = await res.json();
+    updates = await api<Updates>('/api/system/updates');
   }
 
   async function loadOperation() {
     try {
-      const res = await fetch('/api/system/operations/current');
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const next = await res.json();
+      const next = await api<Operation>('/api/system/operations/current');
       // The previous operation's ConfigMap can outlive the new Job by a few
       // seconds; never let it stop the poll for the operation we just started.
       if (
@@ -127,7 +51,7 @@
       }
       operation = next;
       reconnecting = false;
-    } catch (e) {
+    } catch {
       // During the Talos reboot the API is unreachable. Keep the last state and
       // keep polling; the operation lives in a ConfigMap, not this browser.
       if (isActive(operation?.phase)) reconnecting = true;
@@ -135,16 +59,23 @@
   }
 
   async function refresh() {
+    loadError = '';
     try {
       await Promise.all([loadVersion(), loadUpdates()]);
+      // Keep the sidebar update dot in sync with the page's view.
+      await refreshSystemUpdates();
     } catch (e) {
-      message = 'Failed to load system state: ' + e;
-      messageType = 'error';
+      loadError = 'Failed to load system state: ' + (e instanceof Error ? e.message : String(e));
     } finally {
       loading = false;
     }
     await loadOperation();
     if (isActive(operation?.phase)) schedule();
+  }
+
+  function retry() {
+    loading = true;
+    refresh();
   }
 
   function schedule() {
@@ -159,9 +90,8 @@
     checking = true;
     message = '';
     try {
-      const res = await fetch('/api/system/updates/check', { method: 'POST' });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      updates = await res.json();
+      updates = await api<Updates>('/api/system/updates/check', { method: 'POST' });
+      await refreshSystemUpdates();
       if (updates?.error) {
         message = 'Update check failed: ' + updates.error;
         messageType = 'error';
@@ -176,61 +106,79 @@
         messageType = 'info';
       }
     } catch (e) {
-      message = 'Update check failed: ' + e;
+      message = 'Update check failed: ' + (e instanceof Error ? e.message : String(e));
       messageType = 'error';
     } finally {
       checking = false;
     }
   }
 
-  function disabledReason(op: Op): string {
-    if (!version) return 'loading';
-    if (!version.upgradable) {
-      return version.profile === 'installer'
-        ? 'installer release facts are incomplete; reinstall from a current pack or use make install-vm'
-        : 'this is a make install-vm deployment; apply releases with make install-vm';
-    }
-    if (isActive(operation?.phase)) return 'an operation is running';
-    const candidate = updates?.available;
-    if (!candidate) return 'check for updates first';
-    if (!updates?.stepping.allowed) return updates?.stepping.reason || 'this release cannot be applied yet';
-    if (op === 'naslos') {
-      if (version.naslosVersion === candidate.version) return 'Naslos is up to date';
-      if (
-        version.talosVersion !== version.releaseTalosVersion ||
-        version.kubernetesVersion !== version.releaseKubernetesVersion
-      ) {
-        return 'finish pending system upgrades first';
-      }
-      return '';
-    }
-    if (version.naslosVersion !== candidate.version) return 'upgrade Naslos first';
-    if (op === 'talos') {
-      if (cmpVersion(candidate.talosVersion, version.talosVersion) <= 0) return 'Talos is already current';
-      return '';
-    }
-    if (version.talosVersion !== candidate.talosVersion) return 'upgrade Talos first';
-    if (cmpVersion(candidate.kubernetesVersion, version.kubernetesVersion) <= 0) {
-      return 'Kubernetes is already current';
-    }
-    return '';
+  async function begin(op: Op) {
+    if (!updates?.available) return;
+    const reason = disabledReason(op, version, updates, operation);
+    if (reason) return;
+    const candidate = updates.available;
+    const ok = await confirmAction({
+      title: opTitle[op],
+      message: `This upgrades the node to ${candidate.version}.${
+        op === 'talos'
+          ? ' Shares and apps go offline while the node reboots.'
+          : op === 'kubernetes'
+            ? ' The control plane restarts; there is no automatic rollback.'
+            : ''
+      }`,
+      confirmLabel: 'Start upgrade',
+      tone: 'danger',
+      typedConfirmation: candidate.version
+    });
+    if (ok) await start(op, candidate.version);
   }
 
-  function begin(op: Op) {
-    if (disabledReason(op)) return;
-    confirmText = '';
-    confirmOp = op;
+  async function start(op: Op, target: string) {
+    starting = true;
+    message = '';
+    try {
+      const body = await api<{ operationId?: string }>('/api/system/operations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ op, version: target })
+      });
+      operation = {
+        id: body.operationId ?? '',
+        op,
+        from: version?.naslosVersion ?? '',
+        to: target,
+        phase: 'pending',
+        steps: [],
+        message: 'Operation created',
+        startedAt: new Date().toISOString(),
+        finishedAt: '',
+        result: '',
+        attempts: 0,
+        log: ''
+      };
+      schedule();
+    } catch (e) {
+      message = 'Could not start the operation: ' + (e instanceof Error ? e.message : String(e));
+      messageType = 'error';
+    } finally {
+      starting = false;
+    }
   }
 
-  function beginReboot() {
+  async function beginReboot() {
     if (isActive(operation?.phase)) return;
-    rebootText = '';
-    rebootConfirm = true;
+    const ok = await confirmAction({
+      title: 'Reboot node',
+      message: 'Shares and apps go offline while the Talos node reboots. This cannot be undone.',
+      confirmLabel: 'Reboot',
+      tone: 'danger',
+      typedConfirmation: 'reboot'
+    });
+    if (ok) await rebootNode();
   }
 
   async function rebootNode() {
-    if (rebootText !== 'reboot') return;
-    rebootConfirm = false;
     rebooting = true;
     message = 'Rebooting the node...';
     messageType = 'info';
@@ -255,7 +203,7 @@
       } else {
         failure = `HTTP ${res.status}`;
       }
-    } catch (e) {
+    } catch {
       // Abort or dropped connection: the reboot may be underway.
       requested = true;
     } finally {
@@ -288,7 +236,7 @@
           await refresh();
           return;
         }
-      } catch (e) {
+      } catch {
         // The API is down with the node.
         sawDown = true;
       }
@@ -310,64 +258,8 @@
     rebootTimer = setTimeout(poll, 5000);
   }
 
-  async function start() {
-    if (!confirmOp || !updates?.available) return;
-    if (confirmText !== updates.available.version) return;
-    const op = confirmOp;
-    const candidate = updates.available;
-    starting = true;
-    message = '';
-    try {
-      const res = await fetch('/api/system/operations', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ op, version: candidate.version })
-      });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
-      confirmOp = null;
-      operation = {
-        id: body.operationId,
-        op,
-        from: version?.naslosVersion ?? '',
-        to: candidate.version,
-        phase: 'pending',
-        steps: [],
-        message: 'Operation created',
-        startedAt: new Date().toISOString(),
-        finishedAt: '',
-        result: '',
-        attempts: 0,
-        log: ''
-      };
-      schedule();
-    } catch (e) {
-      message = 'Could not start the operation: ' + e;
-      messageType = 'error';
-    } finally {
-      starting = false;
-    }
-  }
-
-  const opTitle: Record<string, string> = {
-    naslos: 'Upgrade Naslos',
-    talos: 'Upgrade Talos',
-    kubernetes: 'Upgrade Kubernetes'
-  };
-
-  // Release metadata is remote input. Only an absolute https URL may become a
-  // clickable link; anything else (javascript:, http:, relative) is dropped.
-  function safeNotesUrl(value: unknown): string {
-    if (typeof value !== 'string') return '';
-    try {
-      const parsed = new URL(value.trim());
-      return parsed.protocol === 'https:' ? parsed.href : '';
-    } catch {
-      return '';
-    }
-  }
-
   $: notesUrl = safeNotesUrl(updates?.available?.notesUrl);
+  $: operationActive = isActive(operation?.phase);
 
   onMount(refresh);
   onDestroy(() => {
@@ -377,276 +269,51 @@
   });
 </script>
 
-<div class="max-w-4xl mx-auto">
-  <h1 class="text-3xl font-bold mb-2">System</h1>
-  <p class="text-gray-400 mb-6">Versions, release checks and the ordered upgrade operations.</p>
+<div class="mx-auto max-w-4xl">
+  <PageHeader
+    title="System"
+    subtitle="Versions, release checks and the ordered upgrade operations."
+  />
 
   {#if message}
     <div
-      class={`callout mb-6 ${
-        messageType === 'success'
-          ? 'callout-ok'
-          : messageType === 'error'
-            ? 'callout-bad'
-            : 'callout-info'
-      }`}
+      class={`callout ${messageType === 'success' ? 'callout-ok' : messageType === 'error' ? 'callout-bad' : 'callout-info'}`}
       role={messageType === 'success' ? 'status' : 'alert'}
     >
       <p class="text-sm">{message}</p>
     </div>
   {/if}
 
-  {#if loading}
-    <LoadingState label="Loading system state..." />
-  {:else if version}
-    <section class="card mb-6">
-      <h2 class="text-lg font-bold mb-4">Versions</h2>
-      <dl class="grid gap-3 sm:grid-cols-2">
-        <div class="flex justify-between gap-4">
-          <dt class="text-gray-400">Naslos</dt>
-          <dd class="font-mono">{version.naslosVersion || '—'}</dd>
-        </div>
-        <div class="flex justify-between gap-4">
-          <dt class="text-gray-400">Chart</dt>
-          <dd class="font-mono">{version.chartVersion || '—'}</dd>
-        </div>
-        <div class="flex justify-between gap-4">
-          <dt class="text-gray-400">Talos</dt>
-          <dd class="font-mono">{version.talosVersion || '—'}</dd>
-        </div>
-        <div class="flex justify-between gap-4">
-          <dt class="text-gray-400">Kubernetes</dt>
-          <dd class="font-mono">{version.kubernetesVersion || '—'}</dd>
-        </div>
-      </dl>
-      {#if !version.upgradable}
-        <p class="text-sm text-amber-400 mt-4">
-          {#if version.profile === 'installer'}
-            The installer release facts are incomplete (Naslos, Talos or
-            Kubernetes version missing), so web upgrades are disabled. Reinstall
-            from a current pack, or use <span class="font-mono">make install-vm</span>.
-          {:else}
-            This is a <span class="font-mono">make install-vm</span> deployment.
-            It reports its versions here, but web upgrades are disabled; apply
-            releases with <span class="font-mono">make install-vm</span>. An
-            installer node can use the web upgrader after bootstrapping with the
-            0.3.0 installer <span class="font-mono">--resume</span>.
-          {/if}
-        </p>
+  <AsyncState
+    loading={loading}
+    error={loadError}
+    onRetry={retry}
+    loadingText="Loading system state..."
+  >
+    {#if version}
+      <VersionsCard {version} />
+      <NodeCard
+        {rebooting}
+        operationActive={operationActive}
+        onReboot={beginReboot}
+      />
+      <UpdatesCard
+        {updates}
+        {version}
+        {checking}
+        {notesUrl}
+        onCheck={checkNow}
+      />
+      <OperationsCard
+        {version}
+        {updates}
+        {operation}
+        {reconnecting}
+        onBegin={begin}
+      />
+      {#if starting}
+        <p class="sr-only" role="status">Starting the operation…</p>
       {/if}
-    </section>
-
-    <section class="card mb-6">
-      <div class="flex items-start justify-between gap-4">
-        <div>
-          <h2 class="text-lg font-bold">Node</h2>
-          <p class="text-sm text-gray-400 mt-1">
-            Reboot the Talos node. Shares and apps go offline until it returns.
-          </p>
-          {#if rebooting}
-            <p class="text-sm text-amber-400 mt-2">node rebooting, reconnecting...</p>
-          {:else if isActive(operation?.phase)}
-            <p class="text-sm text-amber-400 mt-2">an operation is running</p>
-          {/if}
-        </div>
-        <button
-          type="button"
-          class="btn"
-          on:click={beginReboot}
-          disabled={rebooting || isActive(operation?.phase)}
-        >
-          {rebooting ? 'Rebooting...' : 'Reboot node'}
-        </button>
-      </div>
-    </section>
-
-    <section class="card mb-6">
-      <div class="flex items-start justify-between gap-4">
-        <div>
-          <h2 class="text-lg font-bold">Updates</h2>
-          <p class="text-sm text-gray-400 mt-1">
-            {#if updates?.checkedAt}
-              Checked {updates.checkedAt}
-            {:else}
-              No update check has run yet.
-            {/if}
-          </p>
-        </div>
-        <button
-          type="button"
-          class="btn btn-primary"
-          on:click={checkNow}
-          disabled={checking || !version.updatesEnabled}
-        >
-          {checking ? 'Checking…' : 'Check now'}
-        </button>
-      </div>
-
-      {#if updates?.error}
-        <p class="text-sm text-red-400 mt-3">{updates.error}</p>
-      {/if}
-      {#if updates?.available}
-        <div class="mt-4 p-4 rounded-lg bg-naslos-dark border border-naslos-border">
-          <p class="font-medium">
-            {#if updates.available.version === version?.naslosVersion}
-              System upgrade for Naslos {updates.available.version}
-            {:else}
-              Naslos {updates.available.version} is available
-            {/if}
-          </p>
-          <p class="text-sm text-gray-400 mt-1">
-            Talos {updates.available.talosVersion} · Kubernetes
-            {updates.available.kubernetesVersion}
-          </p>
-          {#if notesUrl}
-            <a
-              class="text-sm text-naslos-accent underline mt-2 inline-block"
-              href={notesUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-            >Release notes</a>
-          {/if}
-        </div>
-      {:else if updates?.blocked}
-        <p class="text-sm text-gray-400 mt-3">{updates.blocked}</p>
-      {/if}
-    </section>
-
-    <section class="card mb-6">
-      <h2 class="text-lg font-bold mb-4">Upgrade operations</h2>
-      <p class="text-sm text-gray-400 mb-4">
-        The order is always Naslos, then Talos, then Kubernetes. Each step is pinned by the
-        installed release.
-      </p>
-      <div class="space-y-3">
-        {#each ops as op}
-          {@const reason = disabledReason(op)}
-          <div class="flex items-center justify-between gap-4 p-3 rounded-lg bg-naslos-dark">
-            <div>
-              <p class="font-medium">{opTitle[op]}</p>
-              {#if reason}
-                <p class="text-xs text-gray-500 mt-0.5">{reason}</p>
-              {:else if updates?.available}
-                <p class="text-xs text-gray-500 mt-0.5">
-                  to {op === 'naslos'
-                    ? updates.available.version
-                    : op === 'talos'
-                      ? updates.available.talosVersion
-                      : updates.available.kubernetesVersion}
-                </p>
-              {/if}
-            </div>
-            <button
-              type="button"
-              class="btn btn-primary"
-              disabled={!!reason}
-              on:click={() => begin(op)}
-            >
-              {opTitle[op]}
-            </button>
-          </div>
-        {/each}
-      </div>
-    </section>
-
-    {#if operation && operation.phase !== 'idle'}
-      <section class="card">
-        <div class="flex items-center justify-between gap-4">
-          <div>
-            <h2 class="text-lg font-bold">Operation {operation.op}</h2>
-            <p class="text-sm text-gray-400">
-              {operation.from} → {operation.to} · <span class="font-mono">{operation.phase}</span>
-            </p>
-          </div>
-          {#if reconnecting}
-            <p class="text-sm text-amber-400">node rebooting, reconnecting…</p>
-          {/if}
-        </div>
-        {#if operation.message}
-          <p class="text-sm mt-3">{operation.message}</p>
-        {/if}
-        <ul class="mt-4 space-y-2">
-          {#each operation.steps as step (step.name)}
-            <li class="flex items-start gap-3 text-sm">
-              <span
-                class="mt-1 w-2 h-2 rounded-full shrink-0"
-                class:bg-green-500={step.status === 'succeeded'}
-                class:bg-red-500={step.status === 'failed'}
-                class:bg-naslos-accent={step.status === 'running'}
-                class:bg-gray-600={step.status !== 'succeeded' && step.status !== 'failed' && step.status !== 'running'}
-              ></span>
-              <div>
-                <p class="font-medium">{step.name}</p>
-                <p class="text-gray-400">{step.message}</p>
-              </div>
-            </li>
-          {/each}
-        </ul>
-        {#if operation.log}
-          <pre class="mt-4 p-3 rounded-lg bg-black/40 text-xs overflow-auto max-h-64 whitespace-pre-wrap">{operation.log}</pre>
-        {/if}
-      </section>
     {/if}
-  {/if}
+  </AsyncState>
 </div>
-
-{#if rebootConfirm}
-  <Modal title="Reboot node" onClose={() => (rebootConfirm = false)}>
-    <p class="text-sm text-gray-400">
-      Shares and apps go offline while the Talos node reboots. This cannot be undone.
-    </p>
-    <label class="label" for="confirm-reboot">Type reboot to confirm</label>
-    <input
-      id="confirm-reboot"
-      type="text"
-      class="input w-full"
-      bind:value={rebootText}
-      autocomplete="off"
-    />
-    <div slot="footer">
-      <button type="button" class="btn btn-secondary" on:click={() => (rebootConfirm = false)}>Cancel</button>
-      <button
-        type="button"
-        class="btn btn-primary"
-        on:click={rebootNode}
-        disabled={rebootText !== 'reboot' || isActive(operation?.phase)}
-      >
-        Reboot
-      </button>
-    </div>
-  </Modal>
-{/if}
-
-{#if confirmOp && updates?.available}
-  <Modal title={opTitle[confirmOp]} onClose={() => (confirmOp = null)}>
-    <p class="text-sm text-gray-400">
-      This upgrades the node to <span class="font-mono">{updates.available.version}</span>.
-      {#if confirmOp === 'talos'}
-        Shares and apps go offline while the node reboots.
-      {:else if confirmOp === 'kubernetes'}
-        The control plane restarts; there is no automatic rollback.
-      {/if}
-    </p>
-    <label class="label" for="confirm-version">Type {updates.available.version} to confirm</label>
-    <input
-      id="confirm-version"
-      type="text"
-      class="input w-full"
-      bind:value={confirmText}
-      autocomplete="off"
-    />
-    <div slot="footer">
-      <button type="button" class="btn btn-secondary" on:click={() => (confirmOp = null)} disabled={starting}>
-        Cancel
-      </button>
-      <button
-        type="button"
-        class="btn btn-primary"
-        on:click={start}
-        disabled={starting || confirmText !== updates.available.version}
-      >
-        {starting ? 'Starting…' : 'Start upgrade'}
-      </button>
-    </div>
-  </Modal>
-{/if}
