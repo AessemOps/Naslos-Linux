@@ -18,7 +18,7 @@ and [`charts/naslos/Chart.lock`](charts/naslos/Chart.lock); each remains under
 its own upstream license. Applications installed at runtime from the app catalog
 are third-party software chosen by the operator and are not listed here.
 
-**Last reviewed: 2026-11-24.** Maintenance: update this file whenever a direct dependency changes in
+**Last reviewed: 2026-11-27.** Maintenance: update this file whenever a direct dependency changes in
 `rust/api/Cargo.toml`, `rust/agent/Cargo.toml`, `ui/package.json`, `charts/naslos/Chart.yaml`, or the Dockerfiles.
 It also lists the GitHub Actions used by the CI/release workflows.
 
@@ -113,6 +113,8 @@ Runtime dependencies:
 | @xterm/xterm | ^6.0.0 | MIT | https://github.com/xtermjs/xterm.js |
 | @xterm/addon-fit | ^0.11.0 | MIT | https://github.com/xtermjs/xterm.js |
 | @novnc/novnc | ^1.5.0 (pinned: >=1.6 uses a top-level `await` the UI build target does not support, and QEMU's VNC never streams H.264) | MPL-2.0 | https://github.com/novnc/noVNC |
+| @fontsource/fira-sans | ^5.3.0 (self-hosted @font-face CSS + WOFF/WOFF2 files) | OFL-1.1 | https://github.com/fontsource/font-files |
+| @fontsource/fira-code | ^5.3.0 (self-hosted @font-face CSS + WOFF/WOFF2 files) | OFL-1.1 | https://github.com/fontsource/font-files |
 
 Adapted assets (no dependency; path data copied into the source tree with a
 provenance header in `ui/src/lib/components/Icon.svelte`):
