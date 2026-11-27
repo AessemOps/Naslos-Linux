@@ -197,7 +197,7 @@
           <p class="text-sm">{loadError}</p>
           <Button variant="secondary" size="sm" on:click={retryLoad}>Retry</Button>
         </div>
-        <p class="mt-2 text-xs opacity-80">
+        <p class="mt-2 text-xs">
           The inventory could not be read. The sections below show the last known values and
           changes stay disabled until a reload succeeds.
         </p>
