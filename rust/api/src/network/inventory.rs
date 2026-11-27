@@ -284,13 +284,16 @@ fn physical_links(values: &[serde_json::Value]) -> Vec<LinkRow> {
 }
 
 /// Talos reports carrier as `linkState` and the kernel state as
-/// `operationalState`; `up` is the legacy shape. Unknown stays up.
+/// `operationalState`; `up` is the legacy shape. An `unknown` (or absent)
+/// state stays up: drivers that expose no operstate report `unknown`.
 fn link_up(spec: &serde_json::Value) -> bool {
     if let Some(state) = spec.get("linkState").and_then(|v| v.as_bool()) {
         return state;
     }
     if let Some(state) = spec.get("operationalState").and_then(|v| v.as_str()) {
-        return state.eq_ignore_ascii_case("up");
+        if !state.is_empty() && !state.eq_ignore_ascii_case("unknown") {
+            return state.eq_ignore_ascii_case("up");
+        }
     }
     spec.get("up").and_then(|v| v.as_bool()).unwrap_or(true)
 }
@@ -567,6 +570,14 @@ mod tests {
         assert!(!links[1].up, "linkState=false must not render as up");
         assert_eq!(links[0].mac, "aa:bb:cc:dd:ee:01");
         assert_eq!(links[0].mtu, 1500);
+    }
+
+    #[test]
+    fn an_unknown_operational_state_reads_as_up() {
+        let unknown = serde_json::json!({"operationalState": "unknown"});
+        assert!(link_up(&unknown));
+        let down = serde_json::json!({"operationalState": "down"});
+        assert!(!link_up(&down));
     }
 
     #[test]

@@ -143,7 +143,7 @@ retrying or using the browser path worked around it. Worth watching.
   `spec.name`) and carrier in `linkState`, not `up`;
   `rust/api/src/network/inventory.rs` now reads both, with a unit test on the
   live shape (`fix/live-drill-0.7.68`). Needs the next release to go live;
-  then re-run `tests/network.spec.ts`.
+  then re-run `ui/tests/network.spec.ts`.
 - **vmd image packaging defect (fixed in 0.7.62, PR #278):** every vmd image
   built since the 1.100 toolchain bump linked against the `rust:1.100-slim`
   builder's Debian 13 glibc 2.41 while the runtime stage is Debian 12
@@ -402,10 +402,8 @@ retrying or using the browser path worked around it. Worth watching.
   `succeeded` count, so `read_job_status` reported `pending` forever and every
   later upgrade/revert/reboot failed with "another system operation is
   starting". The stale Job was removed on 2026-11-27 so the 0.7.65 upgrade
-  could start. The running 0.7.65 API still has the bug (the next upgrade Job
-  runs that API); 0.7.66 fixes it. Until the node is on 0.7.66, a finished
-  operation Job stuck at `SuccessCriteriaMet` is cleared the same way
-  (`kubectl delete job`).
+  could start. 0.7.66 fixed the check and the node has carried it since the
+  0.7.68 deploy (revision 80), so such a Job no longer blocks operations.
 - **Encrypted replication (released in 0.7.64, now deployed in 0.7.65;
   live drill pending):**
   FR-ENC-07. An encrypted source is sent raw
