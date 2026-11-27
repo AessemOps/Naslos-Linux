@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Locator, type Page } from '@playwright/test';
 
 // Mutating network tests are opt-in only. The API suite runs against the live
 // production node, so a default apply would reconfigure it. CI never sets this.
@@ -11,6 +11,16 @@ const APPLY_ENABLED = process.env.NETWORK_APPLY_TEST === '1';
 async function networkApiPresent(request: any): Promise<boolean> {
   const res = await request.get('/api/network');
   return res.status() !== 404;
+}
+
+// Wait until the inventory has rendered either a link card or the no-links
+// message. Checking only that the loading text is hidden races the first
+// render: it can pass before loading starts, and count() does not wait.
+async function firstLinkEdit(page: Page): Promise<Locator | null> {
+  const edit = page.getByRole('button', { name: /^Edit / }).first();
+  const none = page.getByText('No physical links were reported by Talos.');
+  await expect(edit.or(none)).toBeVisible({ timeout: 15_000 });
+  return (await edit.isVisible()) ? edit : null;
 }
 
 test.describe('network settings', () => {
@@ -54,11 +64,9 @@ test.describe('network settings', () => {
 
   test('an invalid CIDR is rejected in the browser without a POST', async ({ page }) => {
     await page.goto('/settings/network');
-    await expect(page.getByText('Loading network inventory...')).toBeHidden({ timeout: 15_000 });
-
-    const edit = page.getByRole('button', { name: /^Edit / }).first();
-    test.skip((await edit.count()) === 0, 'Talos reported no physical links');
-    await edit.click();
+    const edit = await firstLinkEdit(page);
+    test.skip(edit === null, 'Talos reported no physical links');
+    await edit!.click();
 
     await page.getByLabel('Addressing').selectOption('static');
     await page.getByLabel('Addresses').fill('not-a-cidr');
@@ -76,11 +84,9 @@ test.describe('network settings', () => {
 
   test('a gateway outside the configured subnet is rejected without a POST', async ({ page }) => {
     await page.goto('/settings/network');
-    await expect(page.getByText('Loading network inventory...')).toBeHidden({ timeout: 15_000 });
-
-    const edit = page.getByRole('button', { name: /^Edit / }).first();
-    test.skip((await edit.count()) === 0, 'Talos reported no physical links');
-    await edit.click();
+    const edit = await firstLinkEdit(page);
+    test.skip(edit === null, 'Talos reported no physical links');
+    await edit!.click();
 
     await page.getByLabel('Addressing').selectOption('static');
     await page.getByLabel('Addresses').fill('10.123.0.10/24');
