@@ -71,6 +71,11 @@
   let selectedPool = '';
   let activeStep: 'config' | 'exposure' | 'review' | 'confirm' = 'config';
   let env: EnvRow[] = [];
+  // Naslos datasets are group-owned by `naslos_users` (10000). Apply the
+  // platform owner once when the first dataset is selected; the operator can
+  // still change PUID/PGID afterwards. The flag lives here, not in the config
+  // step, so stepping away and back cannot reapply it over their choice.
+  let datasetOwnerApplied = false;
 
   const groupOptions = [
     { value: 10000, label: 'naslos_users (10000) — dataset access' },
@@ -96,6 +101,15 @@
     .filter((row) => row.name.trim())
     .map((row) => `${row.name.trim()}=${row.secret ? '••••••' : (row.value ?? '')}`)
     .join(', ');
+
+  $: if (app && selectedDatasets.length > 0 && !datasetOwnerApplied) {
+    datasetOwnerApplied = true;
+    const props = app.schema?.properties ?? {};
+    const next = { ...values };
+    if (props.pgid && Number(next.pgid ?? 0) === Number(props.pgid.default ?? 0)) next.pgid = 10000;
+    if (props.puid && Number(next.puid ?? 0) === Number(props.puid.default ?? 0)) next.puid = 10001;
+    values = next;
+  }
 
   async function loadDatasets() {
     datasetsError = '';
@@ -317,6 +331,7 @@
             {exposure}
             {baseDomain}
             {envReview}
+            {secretKeys}
           />
         {:else}
           <AppInstallConfirmStep

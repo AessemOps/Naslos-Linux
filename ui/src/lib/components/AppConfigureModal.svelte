@@ -111,7 +111,7 @@
       error = 'The app configuration could not be loaded; retry before saving.';
       return;
     }
-    const submittedEnv = validateEnvRows(env, { supported: envSupported });
+    const submittedEnv = validateEnvRows(env, { supported: envSupported, storedNames });
     if (submittedEnv.rows === null) {
       error = submittedEnv.error;
       return;

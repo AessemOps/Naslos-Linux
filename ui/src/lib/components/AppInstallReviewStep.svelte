@@ -21,6 +21,8 @@
   export let exposure: Exposure;
   export let baseDomain = '';
   export let envReview = '';
+  /// Schema keys whose values are write-only (`format: password` / `writeOnly`).
+  export let secretKeys = new Set<string>();
 
   // A review row must not print false/0 as an empty value; only null, undefined
   // and the empty string actually mean "not set".
@@ -80,7 +82,9 @@
   {#each valueEntries as [key, value]}
     <div class="flex justify-between gap-4 py-2 border-b border-naslos-border">
       <span class="text-gray-400">{labelFor(key)}</span>
-      <span class="font-medium text-sm text-right break-words">{displayValue(value)}</span>
+      <span class="font-medium text-sm text-right break-words"
+        >{secretKeys.has(key) ? '••••••' : displayValue(value)}</span
+      >
     </div>
   {/each}
 </div>
