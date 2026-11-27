@@ -1124,7 +1124,7 @@ async fn check_replica_secret(
 /// an upsert could overwrite a Secret another actor just created at this name.
 /// The job treats an existing Secret as a failed preflight (no rollback, since
 /// the Secret is not ours).
-async fn write_replica_secret(
+pub(crate) async fn write_replica_secret(
     state: &AppState,
     destination: &str,
     key: &RawKey,
