@@ -94,8 +94,8 @@
     return 'ok';
   }
 
-  async function load() {
-    loading = true;
+  async function load(silent = false) {
+    if (!silent) loading = true;
     error = '';
     try {
       settings = await api<McpSettings>('/api/mcp');
@@ -103,8 +103,14 @@
     } catch (e) {
       // The default (disabled, empty) state must never be editable: flipping
       // the toggle or revoking from a failed load would act on unknown data.
-      error = 'Failed to load MCP settings: ' + (e instanceof Error ? e.message : String(e));
-      loaded = false;
+      // A failed background refresh keeps the last good page instead.
+      const text = 'Failed to load MCP settings: ' + (e instanceof Error ? e.message : String(e));
+      if (silent && loaded) {
+        actionError = 'Could not refresh MCP settings: ' + text;
+      } else {
+        error = text;
+        loaded = false;
+      }
     } finally {
       loading = false;
     }
@@ -154,7 +160,7 @@
       freshToken = body.token ?? '';
       copied = false;
       showCreate = false;
-      await load();
+      await load(true);
     } catch (e) {
       createError = e instanceof Error ? e.message : String(e);
     } finally {
@@ -184,7 +190,7 @@
     actionError = '';
     try {
       await api(`/api/mcp/tokens/${encodeURIComponent(token.id)}`, { method: 'DELETE' });
-      await load();
+      await load(true);
     } catch (e) {
       actionError = 'Could not revoke the token: ' + (e instanceof Error ? e.message : String(e));
     } finally {
@@ -308,7 +314,7 @@
       {#if settings.tokens.length === 0}
         <p class="text-sm text-gray-400">No tokens yet.</p>
       {:else}
-        <DataTable>
+        <DataTable label="MCP tokens">
           <table>
             <thead>
               <tr>
@@ -355,7 +361,7 @@
       {#if settings.recentCalls.length === 0}
         <p class="text-sm text-gray-400">No calls recorded yet.</p>
       {:else}
-        <DataTable>
+        <DataTable label="Recent MCP calls">
           <table>
             <thead>
               <tr>

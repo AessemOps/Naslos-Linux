@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { createEventDispatcher } from 'svelte';
   import Button from '../Button.svelte';
   import FormField from '../FormField.svelte';
   import type { LinkView } from './network';
@@ -8,12 +7,15 @@
   export let link: LinkView;
   export let disabled = false;
   export let saving = false;
-
-  const dispatch = createEventDispatcher<{
-    apply: { body: Record<string, unknown>; summary: string };
-  }>();
+  // Resolves true only after the guarded change was accepted. The editor keeps
+  // the draft (and stays open) when the dialog is cancelled or the POST fails.
+  export let onApply: (
+    body: Record<string, unknown>,
+    summary: string
+  ) => Promise<boolean> = async () => false;
 
   let editing = false;
+  let applying = false;
   let addressing = 'dhcp';
   let addresses = '';
   let gateway = '';
@@ -36,8 +38,8 @@
     formError = '';
   }
 
-  function apply() {
-    if (disabled || saving) return;
+  async function apply() {
+    if (disabled || saving || applying) return;
     const error = validateLink({ addressing, addresses, gateway, mtu, lowMtu });
     if (error) {
       formError = error;
@@ -56,8 +58,13 @@
     const summary = `${link.name}: ${
       addressing === 'static' ? splitList(addresses).join(', ') : 'DHCP'
     }${gateway.trim() ? ` via ${gateway.trim()}` : ''}${mtu.trim() ? `, MTU ${mtu}` : ''}.`;
-    editing = false;
-    dispatch('apply', { body, summary });
+    applying = true;
+    try {
+      const applied = await onApply(body, summary);
+      if (applied) editing = false;
+    } finally {
+      applying = false;
+    }
   }
 </script>
 
@@ -174,7 +181,7 @@
       {/if}
 
       <div class="flex flex-wrap gap-3">
-        <Button type="submit" variant="primary" loading={saving} {disabled}>Apply link</Button>
+        <Button type="submit" variant="primary" loading={applying || saving} {disabled}>Apply link</Button>
         <Button variant="secondary" {disabled} on:click={cancelEdit}>Cancel</Button>
       </div>
     </form>

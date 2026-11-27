@@ -26,6 +26,7 @@
   let confirmKind: 'link' | 'dns' = 'link';
   let confirmSummary = '';
   let confirmBody: Record<string, unknown> = {};
+  let confirmResolver: ((ok: boolean) => void) | null = null;
 
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let clockTimer: ReturnType<typeof setInterval> | null = null;
@@ -86,16 +87,32 @@
     }
   }
 
-  function requestChange(body: Record<string, unknown>, summary: string, kind: 'link' | 'dns') {
-    if (inventory.pending) return;
+  // The link editor awaits this promise and closes only on an accepted change,
+  // so cancelling the dialog (or a failed POST) keeps its draft.
+  function requestChange(
+    body: Record<string, unknown>,
+    summary: string,
+    kind: 'link' | 'dns'
+  ): Promise<boolean> {
+    if (inventory.pending) return Promise.resolve(false);
+    if (confirmResolver) settleConfirm(false);
     confirmKind = kind;
     confirmBody = body;
     confirmSummary = summary;
     showConfirm = true;
+    return new Promise<boolean>((resolve) => {
+      confirmResolver = resolve;
+    });
+  }
+
+  function settleConfirm(ok: boolean) {
+    showConfirm = false;
+    const resolve = confirmResolver;
+    confirmResolver = null;
+    resolve?.(ok);
   }
 
   async function confirmApply() {
-    showConfirm = false;
     saving = true;
     message = '';
     try {
@@ -106,10 +123,12 @@
       });
       message = 'Change started. The node is being reconfigured behind a 60 second guard.';
       messageType = 'success';
+      settleConfirm(true);
       await load();
     } catch (e) {
       message = 'Could not start the change: ' + (e instanceof Error ? e.message : String(e));
       messageType = 'error';
+      settleConfirm(false);
     } finally {
       saving = false;
     }
@@ -204,7 +223,7 @@
       primaryLink={inventory.primaryLink}
       disabled={saving || inventory.pending !== null || loadError !== ''}
       {saving}
-      on:apply={(event) => requestChange(event.detail.body, event.detail.summary, 'dns')}
+      on:apply={(event) => void requestChange(event.detail.body, event.detail.summary, 'dns')}
     />
 
     <section class="mb-6" aria-labelledby="network-links">
@@ -215,7 +234,7 @@
             {link}
             disabled={saving || inventory.pending !== null || loadError !== ''}
             {saving}
-            on:apply={(event) => requestChange(event.detail.body, event.detail.summary, 'link')}
+            onApply={(body, summary) => requestChange(body, summary, 'link')}
           />
         {/each}
         {#if inventory.links.length === 0}
@@ -233,7 +252,12 @@
 </div>
 
 {#if showConfirm}
-  <Modal title="Confirm the network change" onClose={() => (showConfirm = false)}>
+  <Modal
+    title="Confirm the network change"
+    onClose={() => {
+      if (!saving) settleConfirm(false);
+    }}
+  >
     <p class="text-sm text-gray-300">{confirmSummary}</p>
     {#if confirmKind === 'link'}
       <div class="callout callout-warn space-y-2 text-sm">
@@ -249,7 +273,7 @@
     {/if}
     <div slot="footer">
       <Button variant="primary" loading={saving} on:click={confirmApply}>Apply</Button>
-      <Button variant="secondary" disabled={saving} on:click={() => (showConfirm = false)}>
+      <Button variant="secondary" disabled={saving} on:click={() => settleConfirm(false)}>
         Cancel
       </Button>
     </div>

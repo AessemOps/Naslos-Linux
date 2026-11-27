@@ -35,8 +35,13 @@
       clearSmtpPassword = false;
       loaded = true;
     } catch (e) {
-      loadError = 'Failed to load SMTP settings: ' + errorText(e);
-      loaded = false;
+      const text = 'Failed to load SMTP settings: ' + errorText(e);
+      if (silent && loaded) {
+        loadError = 'Saved, but refreshing the SMTP settings failed: ' + text;
+      } else {
+        loadError = text;
+        loaded = false;
+      }
     } finally {
       loading = false;
     }
@@ -150,6 +155,10 @@
   {:else if !loaded}
     <ErrorState message={loadError || 'The SMTP settings could not be loaded.'} retry={retryLoad} />
   {:else}
+    {#if loadError}
+      <div class="callout callout-bad" role="alert">{loadError}</div>
+    {/if}
+
     <form class="space-y-4" on:submit|preventDefault={save}>
       <label class="flex cursor-pointer items-center gap-4">
         <input type="checkbox" bind:checked={settings.enabled} class="h-5 w-5 rounded" />

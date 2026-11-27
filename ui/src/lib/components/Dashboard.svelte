@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
   import AsyncState from './AsyncState.svelte';
+  import Button from './Button.svelte';
   import Skeleton from './Skeleton.svelte';
   import CpuDetails from './dashboard/CpuDetails.svelte';
   import HistoryCard from './dashboard/HistoryCard.svelte';
@@ -8,6 +9,7 @@
   import StatCard from './dashboard/StatCard.svelte';
   import SystemInfoCard from './dashboard/SystemInfoCard.svelte';
   import type { DashboardData } from './dashboard/types';
+  import { usageTone } from './dashboard/thresholds';
   import { api } from '$lib/api';
   import { formatBytes } from '$lib/format';
 
@@ -21,6 +23,9 @@
   let data: DashboardData = {};
   let loading = true;
   let error = '';
+  // A failed background poll must keep the last good snapshot on screen; the
+  // full error state is only for the initial load when there is nothing to show.
+  let hasSnapshot = false;
   let inFlight = false;
   let destroyed = false;
   let refreshTimer: ReturnType<typeof setInterval> | null = null;
@@ -44,6 +49,7 @@
       const next = await api<DashboardData>('/api/dashboard');
       if (destroyed) return;
       data = next;
+      hasSnapshot = true;
       error = '';
       cpuSamples = append(cpuSamples, next.cpu?.usage);
       memorySamples = append(memorySamples, next.memory?.usage);
@@ -60,8 +66,10 @@
   }
 
   function retry() {
-    loading = true;
     error = '';
+    // Blanking a populated dashboard on an explicit retry would be worse than
+    // leaving the last snapshot visible; only the initial error shows the loader.
+    if (!hasSnapshot) loading = true;
     loadDashboard();
   }
 
@@ -87,14 +95,6 @@
   $: cpuValue = data.cpu?.usage == null ? '—' : data.cpu.usage.toFixed(1);
   $: memoryValue = data.memory?.usage == null ? '—' : data.memory.usage.toFixed(1);
   $: storageValue = data.disk?.usage == null ? '—' : data.disk.usage.toFixed(1);
-
-  // Thresholds are the same green/amber/red bands the core bars use.
-  function usageTone(value: number | undefined): 'ok' | 'warn' | 'bad' | 'neutral' {
-    if (value == null) return 'neutral';
-    if (value >= 90) return 'bad';
-    if (value >= 75) return 'warn';
-    return 'ok';
-  }
 
   function formatUptime(seconds: number): string {
     if (!seconds) return '—';
@@ -125,9 +125,18 @@
     {/each}
   </div>
   <span class="sr-only" role="status" aria-busy="true" data-testid="page-loading">Loading dashboard...</span>
-{:else if error}
+{:else if error && !hasSnapshot}
   <AsyncState {error} onRetry={retry} />
 {:else}
+  {#if error && hasSnapshot}
+    <div class="callout callout-bad mb-4" role="alert">
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <span class="text-sm">Dashboard refresh failed; showing the last snapshot. {error}</span>
+        <Button variant="secondary" size="sm" on:click={retry}>Retry</Button>
+      </div>
+    </div>
+  {/if}
+
   <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
     <StatCard
       label="CPU Usage"

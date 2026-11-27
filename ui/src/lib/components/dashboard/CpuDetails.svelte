@@ -3,6 +3,7 @@
   // core. The per-core count and the unavailable-temperature note are part of
   // the dashboard contract (data-testid cpu-core / cpu-temp-unavailable).
   import type { CpuInfo } from './types';
+  import { usageTone } from './thresholds';
 
   export let cpu: CpuInfo | undefined = undefined;
 
@@ -18,8 +19,9 @@
   }
 
   function coreBarClass(usage: number): string {
-    if (usage >= 90) return 'bg-red-500';
-    if (usage >= 70) return 'bg-amber-400';
+    const tone = usageTone(usage);
+    if (tone === 'bad') return 'bg-red-500';
+    if (tone === 'warn') return 'bg-amber-400';
     return 'bg-naslos-primary';
   }
 </script>

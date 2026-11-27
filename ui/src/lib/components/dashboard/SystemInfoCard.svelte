@@ -51,11 +51,11 @@
         <dt class="text-sm text-gray-400">Uptime</dt>
         <dd class="font-medium">{formatUptime(system?.uptime || 0)}</dd>
       </div>
-      <div>
-        <dt class="text-sm text-gray-400">Updated</dt>
-        <dd class="font-medium">{formatUpdatedAt(updatedAt)}</dd>
-      </div>
     </dl>
+    <div>
+      <div class="text-sm text-gray-400">Updated</div>
+      <div class="font-medium">{formatUpdatedAt(updatedAt)}</div>
+    </div>
   </div>
 
   {#if (network?.interfaces?.length ?? 0) > 0}

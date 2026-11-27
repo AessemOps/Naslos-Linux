@@ -159,7 +159,10 @@
     const request = ++historyRequest;
     const range = historyRange;
     const metric = historyMetric;
-    historyLoading = true;
+    // A background refresh with a chart already on screen keeps the chart; the
+    // skeleton is only for the first load of a range/metric.
+    const hadStats = historyPoints.length >= 2;
+    if (!hadStats) historyLoading = true;
     historyError = '';
     try {
       const url = `/api/reports/series?range=${range}&metric=${encodeURIComponent(metric)}`;
@@ -200,7 +203,17 @@
   function setHistoryRange(value: string) {
     if (historyRange === value) return;
     historyRange = value;
+    // Never label the previous range's points with the new range while the
+    // replacement loads.
+    historyPoints = [];
+    historyError = '';
     if (historyMeta?.available) loadHistory();
+  }
+
+  function setHistoryMetric() {
+    historyPoints = [];
+    historyError = '';
+    loadHistory();
   }
 
   onMount(() => {
@@ -248,7 +261,7 @@
             id="history-metric"
             class="rounded-lg border border-naslos-border bg-naslos-dark px-3 py-1.5 text-sm"
             bind:value={historyMetric}
-            on:change={loadHistory}
+            on:change={setHistoryMetric}
           >
             {#each historyGroups as group}
               <optgroup label={group.label}>
@@ -262,12 +275,12 @@
       </div>
     </div>
 
-    {#if historyLoading}
+    {#if historyLoading && !historyHasStats}
       <div aria-hidden="true">
         <Skeleton height="h-24" />
       </div>
       <span class="sr-only" role="status" aria-busy="true">Loading history…</span>
-    {:else if historyError}
+    {:else if historyError && !historyHasStats}
       <div data-testid="history-error">
         <p role="alert" class="text-sm text-red-300">{historyError}</p>
         {#if historyMeta?.available}
@@ -281,6 +294,14 @@
         No history for this range yet. The recorder writes one point per minute; check back after a minute.
       </p>
     {:else}
+      {#if historyError}
+        <div class="callout callout-bad mb-3" role="alert">
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <span class="text-sm">History refresh failed; showing the last points. {historyError}</span>
+            <Button variant="secondary" size="sm" on:click={loadHistory}>Retry</Button>
+          </div>
+        </div>
+      {/if}
       <figure aria-labelledby="history-caption">
         <Sparkline values={historyPoints} height={96} />
         <figcaption id="history-caption" class="mt-2 text-sm text-gray-400">

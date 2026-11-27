@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
   import AsyncState from '$lib/components/AsyncState.svelte';
+  import Button from '$lib/components/Button.svelte';
   import PageHeader from '$lib/components/PageHeader.svelte';
   import NodeCard from '$lib/components/system/NodeCard.svelte';
   import OperationsCard from '$lib/components/system/OperationsCard.svelte';
@@ -74,7 +75,10 @@
   }
 
   function retry() {
-    loading = true;
+    loadError = '';
+    // A retry with a snapshot already on screen keeps it visible; only the
+    // first load has nothing to fall back to.
+    if (!version) loading = true;
     refresh();
   }
 
@@ -286,11 +290,20 @@
 
   <AsyncState
     loading={loading}
-    error={loadError}
+    error={version ? '' : loadError}
     onRetry={retry}
     loadingText="Loading system state..."
   >
     {#if version}
+      {#if loadError}
+        <div class="callout callout-bad mb-4" role="alert">
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <span class="text-sm">System refresh failed; showing the last snapshot. {loadError}</span>
+            <Button variant="secondary" size="sm" on:click={retry}>Retry</Button>
+          </div>
+        </div>
+      {/if}
+
       <VersionsCard {version} />
       <NodeCard
         {rebooting}

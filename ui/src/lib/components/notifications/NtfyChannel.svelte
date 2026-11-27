@@ -49,9 +49,15 @@
       loaded = true;
     } catch (e) {
       // A failed GET must never leave an editable default form: Save is
-      // refused until a Retry succeeds.
-      loadError = 'Failed to load notification settings: ' + errorText(e);
-      loaded = false;
+      // refused until a Retry succeeds. A failed *refresh* (silent) keeps the
+      // last good form and reports inline instead.
+      const text = 'Failed to load notification settings: ' + errorText(e);
+      if (silent && loaded) {
+        loadError = 'Saved, but refreshing the notification settings failed: ' + text;
+      } else {
+        loadError = text;
+        loaded = false;
+      }
     } finally {
       loading = false;
     }
@@ -150,6 +156,10 @@
       <Button variant="primary" disabled>Save Settings</Button>
     </div>
   {:else}
+    {#if loadError}
+      <div class="callout callout-bad" role="alert">{loadError}</div>
+    {/if}
+
     <form class="space-y-4" on:submit|preventDefault={save}>
       <label class="flex cursor-pointer items-center gap-4">
         <input type="checkbox" bind:checked={settings.enabled} class="h-5 w-5 rounded" />
