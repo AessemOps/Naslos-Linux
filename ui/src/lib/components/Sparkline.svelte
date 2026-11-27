@@ -1,6 +1,9 @@
 <script lang="ts">
   export let values: number[] = [];
   export let height = 28;
+  // The caller owns the semantic color (usage tone, history accent); the
+  // default keeps every existing call site on the accent color.
+  export let colorClass = 'text-naslos-accent';
 
   $: points = toPoints(values, height);
 
@@ -23,7 +26,7 @@
 <svg
   viewBox={`0 0 100 ${height}`}
   preserveAspectRatio="none"
-  class="w-full text-naslos-accent"
+  class={`w-full ${colorClass}`}
   style={`height:${height}px`}
   aria-hidden="true"
 >
