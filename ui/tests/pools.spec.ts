@@ -49,25 +49,32 @@ test('a dataset can be created and destroyed from the pool page', async ({ page,
     page.on('request', (req) => {
       if (req.method() === 'DELETE' && req.url().includes('/api/datasets')) deletes.push(req.url());
     });
-    page.once('dialog', (dialog) => dialog.dismiss());
+    const confirmDialog = page.locator('.fixed.inset-0');
     await row.getByTitle('Destroy this dataset').click();
+    await expect(
+      confirmDialog.getByRole('heading', { name: `Destroy dataset ${full}?` })
+    ).toBeVisible();
+    await confirmDialog.getByRole('button', { name: 'Cancel' }).click();
+    await expect(confirmDialog).toBeHidden();
     await expect(row).toHaveCount(1);
     expect(deletes).toHaveLength(0);
 
-    // A typed name that does not match is refused locally (prompt + alert).
-    // Register the alert handler only after accepting the prompt, or both
-    // `once` handlers would fire on the same dialog event.
-    page.once('dialog', async (dialog) => {
-      page.once('dialog', (alert) => alert.accept());
-      await dialog.accept('not-the-name');
-    });
+    // A typed name that does not match is refused locally: the confirm button
+    // stays disabled, so nothing is sent.
     await row.getByTitle('Destroy this dataset').click();
+    await confirmDialog.getByLabel(`Type ${full} to confirm`).fill('not-the-name');
+    await expect(
+      confirmDialog.getByRole('button', { name: 'Destroy dataset' })
+    ).toBeDisabled();
+    await confirmDialog.getByRole('button', { name: 'Cancel' }).click();
+    await expect(confirmDialog).toBeHidden();
     await expect(row).toHaveCount(1);
     expect(deletes).toHaveLength(0);
 
     // The matching name is acknowledged and the request carries confirm=<name>.
-    page.once('dialog', (dialog) => dialog.accept(full));
     await row.getByTitle('Destroy this dataset').click();
+    await confirmDialog.getByLabel(`Type ${full} to confirm`).fill(full);
+    await confirmDialog.getByRole('button', { name: 'Destroy dataset' }).click();
     await expect
       .poll(() => deletes.some((url) => url.includes(`confirm=${encodeURIComponent(full)}`)))
       .toBe(true);

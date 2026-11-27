@@ -1,6 +1,11 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import AsyncState from '$lib/components/AsyncState.svelte';
+  import Button from '$lib/components/Button.svelte';
+  import EmptyState from '$lib/components/EmptyState.svelte';
+  import FormField from '$lib/components/FormField.svelte';
   import { formatBytes } from '$lib/format';
+  import { parseJsonSafe } from '$lib/storage';
 
   interface Disk {
     device: string;
@@ -31,38 +36,41 @@
   let wipeConfirmed: string[] = [];
   let creating = false;
   let createResult = '';
+  let createFailed = false;
+
+  $: selectableDisks = disks.filter((d) => !d.isSystemDisk);
+  $: cacheCandidates = selectableDisks.filter(
+    (d) => !selectedDisks.includes(d.device) && !d.inPool && !isZfsMember(d)
+  );
 
   // Available topologies with descriptions for the customization UI.
   const topologyOptions = [
-    { value: 'single', label: 'Single', desc: 'No redundancy. All disks combined into one pool. If any disk fails, all data is lost.' },
-    { value: 'mirror', label: 'Mirror', desc: 'Each disk has an exact copy. Survives one disk failure per mirror pair. Best performance for reads.' },
-    { value: 'raidz1', label: 'RAIDZ1', desc: 'One disk parity. Survives one disk failure. Good balance of capacity and redundancy for 3-5 disks.' },
-    { value: 'raidz2', label: 'RAIDZ2', desc: 'Two disk parity. Survives two disk failures. Recommended for larger pools (6+ disks).' },
-    { value: 'raidz3', label: 'RAIDZ3', desc: 'Three disk parity. Survives three disk failures. Maximum redundancy for large pools.' },
+    {
+      value: 'single',
+      label: 'Single',
+      desc: 'No redundancy. All disks combined into one pool. If any disk fails, all data is lost.'
+    },
+    {
+      value: 'mirror',
+      label: 'Mirror',
+      desc: 'Each disk has an exact copy. Survives one disk failure per mirror pair. Best performance for reads.'
+    },
+    {
+      value: 'raidz1',
+      label: 'RAIDZ1',
+      desc: 'One disk parity. Survives one disk failure. Good balance of capacity and redundancy for 3-5 disks.'
+    },
+    {
+      value: 'raidz2',
+      label: 'RAIDZ2',
+      desc: 'Two disk parity. Survives two disk failures. Recommended for larger pools (6+ disks).'
+    },
+    {
+      value: 'raidz3',
+      label: 'RAIDZ3',
+      desc: 'Three disk parity. Survives three disk failures. Maximum redundancy for large pools.'
+    }
   ];
-
-  async function parseJsonSafe(res: Response, what: string) {
-    // Read the body once as text so we can produce a readable error when the
-    // server answers with something that is not JSON. Without this guard, a
-    // proxy misroute (e.g. nginx serving index.html for /api/* with HTTP 200)
-    // surfaces as a cryptic "SyntaxError: JSON.parse: unexpected character
-    // at line 1 column 1 of the JSON data".
-    const text = await res.text();
-    if (!res.ok) {
-      throw new Error(`${what} failed: HTTP ${res.status} — ${text.slice(0, 200)}`);
-    }
-    const contentType = res.headers.get('content-type') || '';
-    if (!contentType.includes('application/json')) {
-      throw new Error(
-        `${what} failed: expected JSON but got "${contentType || 'unknown content type'}" — ${text.slice(0, 200)}`
-      );
-    }
-    try {
-      return JSON.parse(text);
-    } catch (e) {
-      throw new Error(`${what} failed: invalid JSON response — ${text.slice(0, 200)}`);
-    }
-  }
 
   async function loadDisks() {
     loading = true;
@@ -70,7 +78,7 @@
     disks = [];
     try {
       const res = await fetch('/api/disks');
-      const data = await parseJsonSafe(res, 'Loading disks');
+      const data = await parseJsonSafe<Disk[]>(res, 'Loading disks');
       if (!Array.isArray(data)) {
         throw new Error('Loading disks failed: expected a disk list but got ' + typeof data);
       }
@@ -91,7 +99,7 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ disks: selectedDisks })
       });
-      recommendation = await parseJsonSafe(res, 'Getting recommendation');
+      recommendation = await parseJsonSafe<Recommendation>(res, 'Getting recommendation');
       // Default the custom topology to the recommendation so the UI reflects
       // the advised choice until the user overrides it.
       customTopology = recommendation?.topology || 'single';
@@ -104,7 +112,8 @@
 
   function toggleDisk(device: string) {
     if (selectedDisks.includes(device)) {
-      selectedDisks = selectedDisks.filter(d => d !== device);
+      selectedDisks = selectedDisks.filter((d) => d !== device);
+      wipeConfirmed = wipeConfirmed.filter((d) => d !== device);
     } else {
       selectedDisks = [...selectedDisks, device];
     }
@@ -123,13 +132,13 @@
 
   function toggleWipeConfirm(device: string) {
     wipeConfirmed = wipeConfirmed.includes(device)
-      ? wipeConfirmed.filter(d => d !== device)
+      ? wipeConfirmed.filter((d) => d !== device)
       : [...wipeConfirmed, device];
   }
 
   function unconfirmedSelection() {
-    return selectedDisks.filter(device => {
-      const disk = disks.find(d => d.device === device);
+    return selectedDisks.filter((device) => {
+      const disk = disks.find((d) => d.device === device);
       return disk ? needsWipeConfirm(disk) && !wipeConfirmed.includes(device) : false;
     });
   }
@@ -137,6 +146,7 @@
   async function createPool() {
     creating = true;
     createResult = '';
+    createFailed = false;
     try {
       const res = await fetch('/api/volumes/zfs', {
         method: 'POST',
@@ -154,17 +164,21 @@
         createResult = 'Pool created successfully!';
         step = 4;
       } else {
-        let detail: string;
+        // A non-2xx body is not necessarily JSON, so read it directly instead
+        // of via parseJsonSafe (which throws on the status and loses `error`).
+        let detail = `Creating pool failed (HTTP ${res.status})`;
         try {
-          const data = await parseJsonSafe(res, 'Creating pool');
-          detail = data.error || 'Unknown error';
-        } catch (e) {
-          detail = String(e);
+          const data = await res.json();
+          if (data && typeof data.error === 'string' && data.error) detail = data.error;
+        } catch {
+          // Non-JSON error body: the status line above is still useful.
         }
-        createResult = 'Error: ' + detail;
+        createResult = `Error: ${detail}`;
+        createFailed = true;
       }
     } catch (e) {
-      createResult = 'Error: ' + e;
+      createResult = `Error: ${e instanceof Error ? e.message : String(e)}`;
+      createFailed = true;
     } finally {
       creating = false;
     }
@@ -202,6 +216,7 @@
     cacheDisk = '';
     wipeConfirmed = [];
     createResult = '';
+    createFailed = false;
     error = '';
     void loadDisks();
   }
@@ -209,85 +224,125 @@
   onMount(loadDisks);
 </script>
 
-<div class="max-w-4xl mx-auto">
+<div>
   <!-- Step indicator -->
-  <div class="flex items-center justify-center mb-8">
+  <ol class="mb-8 flex items-center justify-center" aria-label="Pool creation steps">
     {#each [1, 2, 3, 4] as s}
-      <div class="flex items-center">
-        <div class={`w-10 h-10 rounded-full flex items-center justify-center font-bold ${step >= s ? 'bg-naslos-primary text-white' : 'bg-naslos-border text-gray-500'}`}>
+      <li class="flex items-center" aria-current={step === s ? 'step' : undefined}>
+        <span
+          class={`flex h-10 w-10 items-center justify-center rounded-full font-bold ${step >= s ? 'bg-naslos-primary text-white' : 'bg-naslos-border text-gray-500'}`}
+          aria-hidden="true"
+        >
           {s}
-        </div>
+        </span>
+        <span class="sr-only">Step {s}</span>
         {#if s < 4}
-          <div class="w-16 h-1 mx-2 rounded" class:bg-naslos-primary={step > s} class:bg-naslos-border={step <= s}></div>
+          <span
+            class="mx-1 h-1 w-6 rounded sm:mx-2 sm:w-16"
+            class:bg-naslos-primary={step > s}
+            class:bg-naslos-border={step <= s}
+            aria-hidden="true"
+          ></span>
         {/if}
-      </div>
+      </li>
     {/each}
-  </div>
+  </ol>
 
   <!-- Step 1: Select Disks -->
   {#if step === 1}
     <div class="card">
-      <h2 class="text-xl font-bold mb-4">Select Disks</h2>
-      <p class="text-gray-400 mb-6">Choose which disks to use in your ZFS pool. System disks are excluded.</p>
+      <h2 class="mb-4 text-xl font-bold">Select Disks</h2>
+      <p class="mb-6 text-gray-400">
+        Choose which disks to use in your ZFS pool. System disks are excluded.
+      </p>
 
-      {#if loading}
-        <p class="text-gray-400">Loading disks...</p>
-      {:else if error}
-        <p role="alert" class="text-red-400">{error}</p>
-      {:else}
-        <div class="space-y-3">
-          {#each disks.filter(d => !d.isSystemDisk) as disk}
-            <!-- in-pool disks are disabled: they already belong to a pool. -->
-            {@const blocked = !!disk.inPool || isZfsMember(disk)}
-            <label
-              class={`flex items-center gap-4 p-4 rounded-lg border transition-colors ${blocked ? 'border-naslos-border/50 bg-naslos-border/10 opacity-60 cursor-not-allowed' : selectedDisks.includes(disk.device) ? 'border-naslos-primary bg-naslos-primary/10 cursor-pointer' : 'border-naslos-border hover:border-naslos-accent cursor-pointer'}`}
-            >
-              <input
-                type="checkbox"
-                checked={selectedDisks.includes(disk.device)}
-                disabled={blocked}
-                on:change={() => toggleDisk(disk.device)}
-                class="w-5 h-5 rounded"
-              />
-              <div class="flex-1">
-                <div class="flex items-center gap-2">
-                  <span class="font-medium">{disk.device}</span>
-                  {#if disk.inPool}
-                    <span class="text-xs px-2 py-0.5 rounded bg-yellow-900/50 text-yellow-400" title="Already a member of pool '{disk.inPool}'">in pool: {disk.inPool}</span>
-                  {/if}
-                  {#if isZfsMember(disk)}
-                    <span class="text-xs px-2 py-0.5 rounded bg-red-900/50 text-red-300" title="This disk holds a ZFS pool label; import or destroy that pool first">holds a ZFS pool</span>
-                  {:else if needsWipeConfirm(disk)}
-                    <span class="text-xs px-2 py-0.5 rounded bg-amber-900/50 text-amber-300" title="Selected disks with existing data must be confirmed for erasure">contains {(disk.signatures || []).join(', ')}</span>
-                  {/if}
-                </div>
-                <div class="text-sm text-gray-400">
-                  {formatBytes(disk.size)} {disk.model ? `• ${disk.model}` : ''}
-                </div>
+      <AsyncState
+        loading={loading}
+        error={error}
+        loadingText="Loading disks..."
+        onRetry={loadDisks}
+      >
+        {#if selectableDisks.length === 0}
+          <EmptyState
+            icon="hard-drive"
+            title="No non-system disks were reported by the node."
+            detail="Add or free a disk, then scan again."
+          >
+            <svelte:fragment slot="action">
+              <Button variant="secondary" on:click={loadDisks}>Scan again</Button>
+            </svelte:fragment>
+          </EmptyState>
+        {:else}
+          <div class="space-y-3">
+            {#each selectableDisks as disk (disk.device)}
+              <!-- in-pool disks are disabled: they already belong to a pool. -->
+              {@const blocked = !!disk.inPool || isZfsMember(disk)}
+              <div
+                class={`rounded-lg border p-4 transition-colors ${blocked ? 'border-naslos-border/50 bg-naslos-border/10 opacity-60' : selectedDisks.includes(disk.device) ? 'border-naslos-primary bg-naslos-primary/10' : 'border-naslos-border'}`}
+              >
+                <label class={`flex items-center gap-4 ${blocked ? 'cursor-not-allowed' : 'cursor-pointer'}`}>
+                  <input
+                    type="checkbox"
+                    checked={selectedDisks.includes(disk.device)}
+                    disabled={blocked}
+                    on:change={() => toggleDisk(disk.device)}
+                    class="h-5 w-5 rounded"
+                  />
+                  <span class="min-w-0 flex-1">
+                    <span class="flex flex-wrap items-center gap-2">
+                      <span class="font-mono font-medium">{disk.device}</span>
+                      {#if disk.inPool}
+                        <span
+                          class="badge badge-warn"
+                          title="Already a member of pool '{disk.inPool}'"
+                        >
+                          in pool: {disk.inPool}
+                        </span>
+                      {/if}
+                      {#if isZfsMember(disk)}
+                        <span
+                          class="badge badge-bad"
+                          title="This disk holds a ZFS pool label; import or destroy that pool first"
+                        >
+                          holds a ZFS pool
+                        </span>
+                      {:else if needsWipeConfirm(disk)}
+                        <span
+                          class="badge badge-warn"
+                          title="Selected disks with existing data must be confirmed for erasure"
+                        >
+                          contains {(disk.signatures || []).join(', ')}
+                        </span>
+                      {/if}
+                    </span>
+                    <span class="block text-sm text-gray-400">
+                      <span class="font-mono">{formatBytes(disk.size)}</span>
+                      {disk.model ? ` · ${disk.model}` : ''}
+                    </span>
+                  </span>
+                  <span class="badge badge-neutral">{disk.type || 'disk'}</span>
+                </label>
                 {#if needsWipeConfirm(disk) && selectedDisks.includes(disk.device)}
-                  <label class="flex items-center gap-2 mt-2 text-sm text-amber-300">
+                  <label class="mt-3 flex items-center gap-2 text-sm text-amber-300">
                     <input
                       type="checkbox"
                       checked={wipeConfirmed.includes(disk.device)}
                       on:change={() => toggleWipeConfirm(disk.device)}
-                      class="w-4 h-4 rounded"
+                      class="h-4 w-4 rounded"
                     />
                     Erase this disk and everything on it
                   </label>
                 {/if}
               </div>
-              <span class="text-xs px-2 py-1 rounded bg-naslos-border text-gray-300">
-                {disk.type}
-              </span>
-            </label>
-          {/each}
-        </div>
-      {/if}
+            {/each}
+          </div>
+        {/if}
+      </AsyncState>
 
-      <div class="flex justify-end mt-6">
-        <button class="btn btn-primary" on:click={nextStep} disabled={selectedDisks.length === 0}>
+      <div class="mt-6 flex justify-end">
+        <Button on:click={nextStep} disabled={selectedDisks.length === 0 || loading}>
           Next →
-        </button>
+        </Button>
       </div>
     </div>
   {/if}
@@ -295,113 +350,132 @@
   <!-- Step 2: Review Recommendation -->
   {#if step === 2}
     <div class="card">
-      <h2 class="text-xl font-bold mb-4">Review Recommendation</h2>
-      <p class="text-gray-400 mb-6">Based on your disk selection, we recommend the following configuration. You can customize the topology below.</p>
+      <h2 class="mb-4 text-xl font-bold">Review Recommendation</h2>
+      <p class="mb-6 text-gray-400">
+        Based on your disk selection, we recommend the following configuration. You can customize
+        the topology below.
+      </p>
 
-      {#if loading}
-        <p class="text-gray-400">Generating recommendation...</p>
-      {:else if error}
-        <p role="alert" class="text-red-400">{error}</p>
-      {:else if recommendation}
-        <div class="mb-6">
-          <div class="flex items-center justify-between mb-4">
-            <div>
-              <h3 class="font-bold">Recommended Topology</h3>
-              <p class="text-gray-400">{recommendation.topology}</p>
+      <AsyncState
+        loading={loading}
+        error={error}
+        loadingText="Generating recommendation..."
+        onRetry={getRecommendation}
+      >
+        {#if recommendation}
+          <div class="mb-6">
+            <div class="mb-4 flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <h3 class="font-bold">Recommended Topology</h3>
+                <p class="text-gray-400">{recommendation.topology}</p>
+              </div>
+              <div>
+                <h3 class="font-bold">Disks</h3>
+                <p class="text-gray-400">{recommendation.disks.length} disks</p>
+              </div>
             </div>
-            <div>
-              <h3 class="font-bold">Disks</h3>
-              <p class="text-gray-400">{recommendation.disks.length} disks</p>
+            <div class="rounded-lg bg-naslos-border/30 p-4">
+              <p class="text-sm">{recommendation.description}</p>
             </div>
           </div>
-          <div class="bg-naslos-border/30 p-4 rounded-lg">
-            <p class="text-sm">{recommendation.description}</p>
-          </div>
-        </div>
 
-        <!-- Topology Customization -->
-        <div class="mb-6">
-          <h3 class="font-bold mb-2">Customize Topology</h3>
-          <p class="text-sm text-gray-400 mb-3">Override the recommended topology. The recommended option is pre-selected.</p>
-          <div class="space-y-2">
-            {#each topologyOptions as opt}
-              <label class={`flex items-start gap-3 p-3 rounded-lg border transition-colors cursor-pointer ${customTopology === opt.value ? 'border-naslos-primary bg-naslos-primary/10' : 'border-naslos-border hover:border-naslos-accent'}`}>
-                <input
-                  type="radio"
-                  name="topology"
-                  value={opt.value}
-                  bind:group={customTopology}
-                  class="mt-1 w-4 h-4 accent-naslos-primary"
-                />
-                <div class="flex-1">
-                  <div class="flex items-center gap-2">
-                    <span class="font-medium">{opt.label}</span>
-                    {#if opt.value === recommendation.topology}
-                      <span class="text-xs px-2 py-0.5 rounded bg-naslos-primary/20 text-naslos-link">Recommended</span>
-                    {/if}
-                  </div>
-                  <p class="text-sm text-gray-400">{opt.desc}</p>
+          <!-- Topology Customization -->
+          <div class="mb-6">
+            <h3 class="mb-2 font-bold">Customize Topology</h3>
+            <p class="mb-3 text-sm text-gray-400">
+              Override the recommended topology. The recommended option is pre-selected.
+            </p>
+            <div class="space-y-2">
+              {#each topologyOptions as opt}
+                <label
+                  class={`flex cursor-pointer items-start gap-3 rounded-lg border p-3 transition-colors ${customTopology === opt.value ? 'border-naslos-primary bg-naslos-primary/10' : 'border-naslos-border hover:border-naslos-accent'}`}
+                >
+                  <input
+                    type="radio"
+                    name="topology"
+                    value={opt.value}
+                    bind:group={customTopology}
+                    class="mt-1 h-4 w-4 accent-naslos-primary"
+                  />
+                  <span class="flex-1">
+                    <span class="flex items-center gap-2">
+                      <span class="font-medium">{opt.label}</span>
+                      {#if opt.value === recommendation.topology}
+                        <span class="badge badge-info">Recommended</span>
+                      {/if}
+                    </span>
+                    <span class="block text-sm text-gray-400">{opt.desc}</span>
+                  </span>
+                </label>
+              {/each}
+            </div>
+          </div>
+
+          <div class="mb-6">
+            <h3 class="mb-2 font-bold">Selected Disks</h3>
+            <div class="space-y-2">
+              {#each selectedDisks as device}
+                <div class="flex items-center gap-2 rounded bg-naslos-border/30 p-2">
+                  <span class="badge badge-neutral">disk</span>
+                  <span class="font-mono">{device}</span>
                 </div>
-              </label>
-            {/each}
+              {/each}
+            </div>
           </div>
-        </div>
 
-        <div class="mb-6">
-          <h3 class="font-bold mb-2">Selected Disks</h3>
-          <div class="space-y-2">
-            {#each selectedDisks as device}
-              <div class="flex items-center gap-2 p-2 bg-naslos-border/30 rounded">
-                <span class="text-xs px-2 py-1 rounded bg-naslos-border text-gray-300">disk</span>
-                <span>{device}</span>
-              </div>
-            {/each}
-          </div>
-        </div>
-
-        <!-- Optional Cache Drive (L2ARC) -->
-        <div class="mb-6">
-          <h3 class="font-bold mb-2">Cache Drive (Optional)</h3>
-          <p class="text-sm text-gray-400 mb-3">Add a fast device (NVMe/SSD) as a read cache (L2ARC) to speed up random reads. Leave empty to skip.</p>
-          <div class="space-y-2">
-            <label class={`flex items-center gap-3 p-3 rounded-lg border transition-colors cursor-pointer ${cacheDisk === '' ? 'border-naslos-primary bg-naslos-primary/10' : 'border-naslos-border hover:border-naslos-accent'}`}>
-              <input
-                type="radio"
-                name="cache"
-                value=""
-                bind:group={cacheDisk}
-                class="w-4 h-4 accent-naslos-primary"
-              />
-              <div class="flex-1">
-                <span class="font-medium">No cache</span>
-                <p class="text-sm text-gray-400">Standard pool without L2ARC</p>
-              </div>
-            </label>
-            {#each disks.filter(d => !d.isSystemDisk && !selectedDisks.includes(d.device) && !d.inPool) as disk}
-              <label class={`flex items-center gap-3 p-3 rounded-lg border transition-colors cursor-pointer ${cacheDisk === disk.device ? 'border-naslos-primary bg-naslos-primary/10' : 'border-naslos-border hover:border-naslos-accent'}`}>
+          <!-- Optional Cache Drive (L2ARC) -->
+          <div class="mb-6">
+            <h3 class="mb-2 font-bold">Cache Drive (Optional)</h3>
+            <p class="mb-3 text-sm text-gray-400">
+              Add a fast device (NVMe/SSD) as a read cache (L2ARC) to speed up random reads. Leave
+              empty to skip.
+            </p>
+            <div class="space-y-2">
+              <label
+                class={`flex cursor-pointer items-center gap-3 rounded-lg border p-3 transition-colors ${cacheDisk === '' ? 'border-naslos-primary bg-naslos-primary/10' : 'border-naslos-border hover:border-naslos-accent'}`}
+              >
                 <input
                   type="radio"
                   name="cache"
-                  value={disk.device}
+                  value=""
                   bind:group={cacheDisk}
-                  class="w-4 h-4 accent-naslos-primary"
+                  class="h-4 w-4 accent-naslos-primary"
                 />
-                <div class="flex-1">
-                  <div class="flex items-center gap-2">
-                    <span class="font-medium">{disk.device}</span>
-                    <span class="text-xs px-2 py-0.5 rounded bg-naslos-border text-gray-300">{disk.type}</span>
-                  </div>
-                  <p class="text-sm text-gray-400">{disk.model || 'Unknown'} · {formatBytes(disk.size)}</p>
-                </div>
+                <span class="flex-1">
+                  <span class="font-medium">No cache</span>
+                  <span class="block text-sm text-gray-400">Standard pool without L2ARC</span>
+                </span>
               </label>
-            {/each}
+              {#each cacheCandidates as disk (disk.device)}
+                <label
+                  class={`flex cursor-pointer items-center gap-3 rounded-lg border p-3 transition-colors ${cacheDisk === disk.device ? 'border-naslos-primary bg-naslos-primary/10' : 'border-naslos-border hover:border-naslos-accent'}`}
+                >
+                  <input
+                    type="radio"
+                    name="cache"
+                    value={disk.device}
+                    bind:group={cacheDisk}
+                    class="h-4 w-4 accent-naslos-primary"
+                  />
+                  <span class="flex-1">
+                    <span class="flex flex-wrap items-center gap-2">
+                      <span class="font-mono font-medium">{disk.device}</span>
+                      <span class="badge badge-neutral">{disk.type || 'disk'}</span>
+                    </span>
+                    <span class="block text-sm text-gray-400">
+                      {disk.model || 'Unknown'} · {formatBytes(disk.size)}
+                    </span>
+                  </span>
+                </label>
+              {/each}
+            </div>
           </div>
-        </div>
-      {/if}
+        {/if}
+      </AsyncState>
 
-      <div class="flex justify-between mt-6">
-        <button class="btn btn-secondary" on:click={prevStep}>← Back</button>
-        <button class="btn btn-primary" on:click={nextStep} disabled={loading || !recommendation}>Next →</button>
+      <div class="mt-6 flex justify-between">
+        <Button variant="secondary" on:click={prevStep}>← Back</Button>
+        <Button on:click={nextStep} disabled={loading || !recommendation}>Next →</Button>
       </div>
     </div>
   {/if}
@@ -409,36 +483,58 @@
   <!-- Step 3: Pool Name -->
   {#if step === 3}
     <div class="card">
-      <h2 class="text-xl font-bold mb-4">Pool Name</h2>
-      <p class="text-gray-400 mb-6">Enter a name for your ZFS pool.</p>
+      <h2 class="mb-4 text-xl font-bold">Pool Name</h2>
+      <p class="mb-6 text-gray-400">Enter a name for your ZFS pool.</p>
 
-      <div class="mb-6">
-        <label class="label" for="pool-name">Pool Name</label>
-        <input id="pool-name" type="text" bind:value={poolName} class="input w-full" placeholder="e.g. tank" />
-        <p class="text-xs text-gray-500 mt-1">Lowercase letters, numbers and dashes. Used as the ZFS pool name.</p>
-      </div>
+      <form on:submit|preventDefault={createPool} class="mb-6 space-y-4">
+        <FormField
+          label="Pool Name"
+          id="pool-name"
+          required
+          hint="Lowercase letters, numbers and dashes. Used as the ZFS pool name."
+        >
+          <input
+            id="pool-name"
+            type="text"
+            bind:value={poolName}
+            class="input w-full"
+            placeholder="e.g. tank"
+            required
+          />
+        </FormField>
 
-      <div class="flex justify-between mt-6">
-        <button class="btn btn-secondary" on:click={prevStep}>← Back</button>
-        <button class="btn btn-primary" on:click={createPool} disabled={!poolName.trim() || creating || unconfirmedSelection().length > 0}>
-          {creating ? 'Creating…' : 'Create Pool'}
-        </button>
-      </div>
+        {#if createFailed && createResult}
+          <div role="alert" class="callout callout-bad mb-0">{createResult}</div>
+        {/if}
+
+        <div class="flex justify-between">
+          <Button variant="secondary" on:click={prevStep}>← Back</Button>
+          <Button
+            type="submit"
+            loading={creating}
+            disabled={!poolName.trim() || unconfirmedSelection().length > 0}
+          >
+            Create Pool
+          </Button>
+        </div>
+      </form>
     </div>
   {/if}
 
   <!-- Step 4: Result -->
   {#if step === 4}
     <div class="card">
-      <h2 class="text-xl font-bold mb-4">Pool Created</h2>
-      <p class="text-gray-400 mb-6">Your ZFS pool has been created with the selected configuration.</p>
+      <h2 class="mb-4 text-xl font-bold">Pool Created</h2>
+      <p class="mb-6 text-gray-400">
+        Your ZFS pool has been created with the selected configuration.
+      </p>
 
       {#if createResult}
-        <div class="mb-6 p-4 bg-naslos-border/30 rounded-lg"><p>{createResult}</p></div>
+        <div role="status" class="callout callout-ok mb-6">{createResult}</div>
       {/if}
 
-      <div class="flex justify-end mt-6">
-        <button class="btn btn-primary" on:click={createAnotherPool}>Create Another Pool</button>
+      <div class="flex justify-end">
+        <Button on:click={createAnotherPool}>Create Another Pool</Button>
       </div>
     </div>
   {/if}

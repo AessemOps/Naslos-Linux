@@ -1,10 +1,17 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import LoadingState from '$lib/components/LoadingState.svelte';
+  import { api, ApiError } from '$lib/api';
+  import AsyncState from '$lib/components/AsyncState.svelte';
+  import Button from '$lib/components/Button.svelte';
+  import ErrorState from '$lib/components/ErrorState.svelte';
+  import FormField from '$lib/components/FormField.svelte';
   import Modal from '$lib/components/Modal.svelte';
   import PageHeader from '$lib/components/PageHeader.svelte';
   import StatusBadge from '$lib/components/StatusBadge.svelte';
-  import { formatBytes } from '$lib/format';
+  import { formatBytes, fmtTime } from '$lib/format';
+  import { isEncryptedDataset } from '$lib/storage';
+  import { toneFor, type Tone } from '$lib/status';
+  import { confirmAction } from '$lib/stores/confirm';
 
   // Local replication (FR-REP). The API owns the job: the page validates the
   // pair, enqueues, then polls `/api/replication/jobs` for live progress and the
@@ -58,10 +65,13 @@
   }
 
   let loading = true;
+  let refreshing = false;
   let datasets: Dataset[] = [];
   let datasetsError = '';
   let jobs: ReplicationJob[] = [];
   let jobsError = '';
+  let jobsLoaded = false;
+  let actionError = '';
 
   let showModal = false;
   let saving = false;
@@ -74,6 +84,7 @@
   let recursive = false;
   let pruneKeep = 0;
 
+  let cancelingId = '';
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let jobsInFlight = false;
 
@@ -81,12 +92,13 @@
   // valid endpoint (the API requires `<pool>/<name>`).
   $: pairDatasets = datasets.filter((d) => d.name.includes('/'));
   $: runningJobs = jobs.filter((j) => j.state === 'running');
-  $: finishedJobs = jobs.filter((j) => j.state !== 'running').slice().reverse();
+  $: finishedJobs = jobs
+    .filter((j) => j.state !== 'running')
+    .slice()
+    .reverse();
   // An encrypted source is sent raw and the job creates the destination on the
   // first run (a raw receive cannot overwrite an existing dataset).
-  $: encryptedSource = pairDatasets.some(
-    (d) => d.name === source && isEncryptedDataset(d)
-  );
+  $: encryptedSource = pairDatasets.some((d) => d.name === source && isEncryptedDataset(d));
 
   // The destination input switches between a select (both datasets exist) and a
   // free path (raw pair creates it). Clear a value that no longer matches the
@@ -97,33 +109,12 @@
     destination = '';
   }
 
-  function isEncryptedDataset(dataset: Dataset): boolean {
-    return (
-      !!dataset.encryption &&
-      dataset.encryption !== 'off' &&
-      dataset.encryption !== '-'
-    );
-  }
-
-  function fmtTime(s?: string): string {
-    if (!s) return '—';
-    const d = new Date(s);
-    return isNaN(d.getTime()) ? s : d.toLocaleString();
-  }
-
-  function jobTone(state: string): 'ok' | 'warn' | 'bad' | 'info' | 'neutral' {
-    switch (state) {
-      case 'running':
-        return 'info';
-      case 'succeeded':
-        return 'ok';
-      case 'failed':
-        return 'bad';
-      case 'cancelled':
-        return 'warn';
-      default:
-        return 'neutral';
-    }
+  function jobTone(job: ReplicationJob): Tone {
+    // Running is in-progress (info), not healthy; everything else follows the
+    // shared state table, with cancelled called out as a warning.
+    if (job.state === 'running') return 'info';
+    if (job.state === 'cancelled') return 'warn';
+    return toneFor(job.state);
   }
 
   function progressPercent(job: ReplicationJob): number | null {
@@ -162,35 +153,40 @@
 
   async function loadDatasets() {
     try {
-      const res = await fetch('/api/datasets');
-      if (!res.ok) {
-        datasetsError = `Failed to load datasets (HTTP ${res.status})`;
-        return;
-      }
-      const data = await res.json();
-      datasets = Array.isArray(data) ? data : [];
+      const data = await api<unknown>('/api/datasets');
+      datasets = Array.isArray(data) ? (data as Dataset[]) : [];
       datasetsError = '';
-    } catch {
-      datasetsError = 'Failed to connect to the API.';
+    } catch (e) {
+      datasetsError =
+        e instanceof ApiError
+          ? `Failed to load datasets (HTTP ${e.status})`
+          : 'Failed to connect to the API.';
     }
   }
 
-  async function loadJobs() {
+  async function loadJobs(quiet = false) {
     if (jobsInFlight) return;
     jobsInFlight = true;
+    // A retry after a failed first load shows the loader; a refresh or poll
+    // over an already-loaded list keeps that list on screen.
+    if (!quiet) {
+      refreshing = true;
+      if (!jobsLoaded) loading = true;
+    }
     try {
-      const res = await fetch('/api/replication/jobs');
-      if (!res.ok) {
-        jobsError = `Failed to load replication jobs (HTTP ${res.status})`;
-        return;
-      }
-      const data = await res.json();
+      const data = await api<{ jobs?: ReplicationJob[] }>('/api/replication/jobs');
       jobs = Array.isArray(data.jobs) ? data.jobs : [];
       jobsError = '';
-    } catch {
-      jobsError = 'Failed to connect to the API.';
+      jobsLoaded = true;
+    } catch (e) {
+      jobsError =
+        e instanceof ApiError
+          ? `Failed to load replication jobs (HTTP ${e.status})`
+          : 'Failed to connect to the API.';
     } finally {
       jobsInFlight = false;
+      refreshing = false;
+      if (!quiet) loading = false;
     }
   }
 
@@ -202,6 +198,7 @@
     pruneKeep = 0;
     formError = '';
     notice = '';
+    actionError = '';
     // Refresh on every open: a dataset created from another tab must be
     // selectable without a reload.
     void loadDatasets();
@@ -217,7 +214,7 @@
     }
     saving = true;
     try {
-      const res = await fetch('/api/replication/send', {
+      await api('/api/replication/send', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -228,39 +225,51 @@
           pruneKeep: Number(pruneKeep) || 0
         })
       });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || `Could not start replication (HTTP ${res.status})`);
       showModal = false;
       notice = `Replication started: ${source} → ${destination}.`;
       await loadJobs();
       // A raw first send creates the destination; refresh so it is selectable
       // as an existing replica on the next run.
       void loadDatasets();
-    } catch (e: any) {
-      formError = e.message;
+    } catch (e) {
+      formError =
+        e instanceof ApiError
+          ? e.message
+          : 'Could not start replication. Check the API connection and try again.';
     } finally {
       saving = false;
     }
   }
 
   async function cancelJob(job: ReplicationJob) {
-    if (!confirm(`Cancel replication ${job.source} → ${job.destination}?\n\nSnapshots already received stay on the destination.`)) return;
+    if (
+      !(await confirmAction({
+        title: 'Cancel replication',
+        message: `Cancel ${job.source} → ${job.destination}?\n\nSnapshots already received stay on the destination.`,
+        confirmLabel: 'Cancel job',
+        cancelLabel: 'Keep running',
+        tone: 'danger'
+      }))
+    ) {
+      return;
+    }
+    cancelingId = job.id;
+    actionError = '';
     try {
-      const res = await fetch(`/api/replication/jobs/${encodeURIComponent(job.id)}`, {
-        method: 'DELETE'
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || `Could not cancel the job (HTTP ${res.status})`);
+      await api(`/api/replication/jobs/${encodeURIComponent(job.id)}`, { method: 'DELETE' });
       await loadJobs();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      actionError =
+        e instanceof ApiError ? e.message : 'Could not cancel the job. Check the API connection.';
+    } finally {
+      cancelingId = '';
     }
   }
 
   onMount(() => {
     void Promise.all([loadDatasets(), loadJobs()]).finally(() => (loading = false));
     pollTimer = setInterval(() => {
-      if (document.visibilityState === 'visible') void loadJobs();
+      if (document.visibilityState === 'visible') void loadJobs(true);
     }, 3000);
   });
 
@@ -269,41 +278,49 @@
   });
 </script>
 
-<div class="max-w-6xl mx-auto">
+<div class="mx-auto max-w-6xl">
   <PageHeader
     title="Replication"
     subtitle="Copy a dataset to another dataset on this node with zfs send/receive. Incrementals are matched by snapshot GUID; the destination is a replica target."
+    breadcrumbs={[{ label: 'Storage' }, { label: 'Replication' }]}
   >
-    <div slot="actions" class="flex gap-2">
-      <button class="btn btn-secondary" on:click={loadJobs}>Refresh</button>
-      <button class="btn btn-primary" on:click={openCreate}>New replication</button>
+    <div slot="actions" class="flex flex-wrap gap-2">
+      <Button variant="secondary" loading={refreshing} on:click={() => loadJobs()}>Refresh</Button>
+      <Button on:click={openCreate}>New replication</Button>
     </div>
   </PageHeader>
 
   <div class="card mb-6 text-sm text-gray-400">
     <p>
-      Local replication keeps a second dataset in sync with the first. Remote replication,
-      rsync and cloud sync are not implemented yet; use <a class="text-naslos-link underline" href="/backups">Buddy</a>
+      Local replication keeps a second dataset in sync with the first. Remote replication, rsync
+      and cloud sync are not implemented yet; use <a class="text-naslos-link underline" href="/backups"
+        >Buddy</a
+      >
       for off-site copies. Jobs are held in memory and disappear from this list when the API
       restarts, but the received snapshots stay on the destination.
     </p>
   </div>
 
   {#if notice}
-    <div role="status" class="callout callout-ok mb-4">{notice}</div>
+    <div role="status" class="callout callout-ok">{notice}</div>
   {/if}
-  {#if datasetsError}
-    <div role="alert" class="callout callout-bad mb-4">{datasetsError}</div>
+  {#if actionError}
+    <div role="alert" class="callout callout-bad">{actionError}</div>
   {/if}
-  {#if jobsError}
-    <div role="alert" class="callout callout-bad mb-4">{jobsError}</div>
+  {#if jobsLoaded && jobsError}
+    <div role="alert" class="callout callout-bad">
+      Could not refresh the job list; showing the last known state. {jobsError}
+    </div>
   {/if}
 
-  {#if loading}
-    <LoadingState label="Loading replication jobs…" />
-  {:else}
+  <AsyncState
+    {loading}
+    error={jobsLoaded ? '' : jobsError}
+    loadingText="Loading replication jobs…"
+    onRetry={() => loadJobs()}
+  >
     <section class="card mb-6" aria-labelledby="replication-running">
-      <div class="flex items-center justify-between mb-4">
+      <div class="mb-4 flex items-center justify-between">
         <h2 id="replication-running" class="text-xl font-bold">Running</h2>
         <span class="text-xs text-gray-500">{runningJobs.length} active</span>
       </div>
@@ -313,25 +330,35 @@
         <div class="space-y-3">
           {#each runningJobs as job (job.id)}
             {@const percent = progressPercent(job)}
-            <div class="bg-naslos-dark rounded-lg p-3">
+            <div class="rounded-lg bg-naslos-dark p-3">
               <div class="flex flex-wrap items-start justify-between gap-2">
                 <div class="min-w-0">
-                  <div class="font-medium truncate">{job.source} → {job.destination}</div>
+                  <div class="truncate font-medium">{job.source} → {job.destination}</div>
                   <div class="text-xs text-gray-400">
-                    {job.raw ? 'raw encrypted' : job.incremental ? 'incremental' : 'full'}{job.recursive ? ' · recursive' : ''}
+                    {job.raw ? 'raw encrypted' : job.incremental ? 'incremental' : 'full'}{job.recursive
+                      ? ' · recursive'
+                      : ''}
                     {#if job.snapshot}· target {job.snapshot}{/if}
                     {#if job.pruneKeep}· keep {job.pruneKeep}{/if}
                     · started {fmtTime(job.startedAt)}
                   </div>
                 </div>
                 <div class="flex items-center gap-2">
-                  <StatusBadge state={job.state} tone={jobTone(job.state)} />
-                  <button class="btn btn-danger btn-sm" on:click={() => cancelJob(job)}>Cancel</button>
+                  <StatusBadge state={job.state} tone={jobTone(job)} />
+                  <Button
+                    variant="danger"
+                    size="sm"
+                    loading={cancelingId === job.id}
+                    disabled={cancelingId !== '' && cancelingId !== job.id}
+                    on:click={() => cancelJob(job)}
+                  >
+                    Cancel
+                  </Button>
                 </div>
               </div>
               <div class="mt-3">
                 <div
-                  class="w-full bg-naslos-border rounded-full h-3 overflow-hidden"
+                  class="h-3 w-full overflow-hidden rounded-full bg-naslos-border"
                   role="progressbar"
                   aria-label={`Replication progress for ${job.source} to ${job.destination}`}
                   aria-valuemin="0"
@@ -340,11 +367,11 @@
                   aria-valuetext={percent === null ? 'estimating' : `${percent}%`}
                 >
                   <div
-                    class="bg-naslos-primary h-3 transition-all"
+                    class="h-3 bg-naslos-primary transition-all"
                     style={`width: ${percent !== null ? Math.max(2, percent) : 8}%`}
                   ></div>
                 </div>
-                <p class="text-xs text-gray-400 mt-1">
+                <p class="mt-1 text-xs text-gray-400">
                   {formatBytes(job.progress?.bytes ?? 0)} sent
                   {#if (job.progress?.estimatedBytes ?? 0) > 0}
                     of {formatBytes(job.progress.estimatedBytes)} ({percent}%)
@@ -360,7 +387,7 @@
     </section>
 
     <section class="card" aria-labelledby="replication-history">
-      <div class="flex items-center justify-between mb-4">
+      <div class="mb-4 flex items-center justify-between">
         <h2 id="replication-history" class="text-xl font-bold">History</h2>
         <span class="text-xs text-gray-500">the last 20 finished jobs</span>
       </div>
@@ -372,60 +399,68 @@
       {:else}
         <div class="space-y-2">
           {#each finishedJobs as job (job.id)}
-            <div class="bg-naslos-dark rounded-lg p-3">
+            <div class="rounded-lg bg-naslos-dark p-3">
               <div class="flex flex-wrap items-start justify-between gap-2">
                 <div class="min-w-0">
-                  <div class="font-medium truncate">{job.source} → {job.destination}</div>
+                  <div class="truncate font-medium">{job.source} → {job.destination}</div>
                   <div class="text-xs text-gray-400">
-                    {job.raw ? 'raw encrypted' : job.incremental ? 'incremental' : 'full'}{job.recursive ? ' · recursive' : ''}
+                    {job.raw ? 'raw encrypted' : job.incremental ? 'incremental' : 'full'}{job.recursive
+                      ? ' · recursive'
+                      : ''}
                     {#if job.snapshot}· {job.snapshot}{/if}
                     · {fmtTime(job.startedAt)}{#if job.finishedAt} → {fmtTime(job.finishedAt)}{/if}
                   </div>
                 </div>
-                <StatusBadge state={job.state} tone={jobTone(job.state)} />
+                <StatusBadge state={job.state} tone={jobTone(job)} />
               </div>
 
               {#if job.state === 'succeeded' && job.result}
-                <div class="text-xs text-gray-300 mt-2">
+                <div class="mt-2 text-xs text-gray-300">
                   <strong>{job.result.status}</strong>
                   {#if job.result.bytes > 0}· {formatBytes(job.result.bytes)} sent{/if}
-                  · {job.result.raw ? 'raw encrypted' : job.result.incremental ? 'incremental' : 'full'}
+                  · {job.result.raw
+                    ? 'raw encrypted'
+                    : job.result.incremental
+                      ? 'incremental'
+                      : 'full'}
                   · {job.result.durationSeconds.toFixed(1)}s
                   {#if job.result.baseSnapshot}· base {job.result.baseSnapshot}{/if}
                   {#if job.result.prunedSnapshots > 0}· pruned {job.result.prunedSnapshots}{/if}
                 </div>
                 {#if job.result.warnings?.length}
-                  <ul class="text-xs text-yellow-400/90 mt-1 list-disc list-inside">
+                  <ul class="mt-1 list-inside list-disc text-xs text-amber-300">
                     {#each job.result.warnings as warning}<li>{warning}</li>{/each}
                   </ul>
                 {/if}
                 {#if job.result.retentionError}
-                  <p class="text-xs text-yellow-400/90 mt-1">Retention: {job.result.retentionError}</p>
+                  <p class="mt-1 text-xs text-amber-300">
+                    Retention: {job.result.retentionError}
+                  </p>
                 {/if}
               {:else if job.error}
-                <p class="text-xs text-red-300 mt-2 break-words">{job.error}</p>
+                <p class="mt-2 break-words text-xs text-red-300">{job.error}</p>
               {/if}
             </div>
           {/each}
         </div>
       {/if}
     </section>
-  {/if}
+  </AsyncState>
 </div>
 
 {#if showModal}
-  <Modal title="New replication" onClose={() => (showModal = false)}>
+  <Modal title="New replication" size="lg" onClose={() => (showModal = false)}>
     <p class="text-sm text-gray-400">
-      Without a snapshot, the job creates a <code class="text-xs">naslos-rep-…</code> snapshot on
-      the source.
+      Without a snapshot, the job creates a <code class="font-mono text-xs">naslos-rep-…</code>
+      snapshot on the source.
     </p>
     {#if encryptedSource}
-      <div class="p-3 rounded-lg bg-naslos-dark border border-naslos-border text-sm text-gray-300">
+      <div class="rounded-lg border border-naslos-border bg-naslos-dark p-3 text-sm text-gray-300">
         The source is encrypted, so it is sent <strong>raw</strong>
-        (<code class="text-xs">zfs send -w</code>): the data is never decrypted by this node. The
-        first run <strong>creates</strong> the destination encrypted with the source key and
-        unlocks it; later runs receive incrementals into that same replica. The replica keeps the
-        source key, so after a reboot it stays locked until you unlock it like any encrypted
+        (<code class="font-mono text-xs">zfs send -w</code>): the data is never decrypted by this
+        node. The first run <strong>creates</strong> the destination encrypted with the source key
+        and unlocks it; later runs receive incrementals into that same replica. The replica keeps
+        the source key, so after a reboot it stays locked until you unlock it like any encrypted
         dataset.
       </div>
     {:else}
@@ -435,104 +470,109 @@
       </p>
     {/if}
 
-    <div>
-      <label class="label" for="replication-source">Source dataset *</label>
-      <select id="replication-source" class="input w-full" bind:value={source}>
-        <option value="">Choose a source…</option>
-        {#each pairDatasets as d}
-          <option value={d.name}>{d.name}{isEncryptedDataset(d) ? ' (encrypted)' : ''}</option>
-        {/each}
-      </select>
-    </div>
+    {#if datasetsError}
+      <ErrorState message={datasetsError} retry={loadDatasets} />
+    {/if}
 
-    <div>
-      <label class="label" for="replication-destination">Destination dataset *</label>
-      {#if encryptedSource}
-        <input
-          id="replication-destination"
-          type="text"
-          bind:value={destination}
-          placeholder="e.g. backup/encrypted-replica"
-          class="input w-full"
-        />
-        <p class="text-xs text-gray-500 mt-1">
-          The first run creates this dataset (its parent must exist). A full raw stream cannot
-          overwrite an existing dataset; later runs use the same existing replica name.
-        </p>
-      {:else}
-        <select id="replication-destination" class="input w-full" bind:value={destination}>
-          <option value="">Choose a destination…</option>
+    <form id="replication-form" on:submit|preventDefault={startReplication} class="space-y-4">
+      <FormField label="Source dataset" id="replication-source" required>
+        <select id="replication-source" class="input w-full" bind:value={source} required>
+          <option value="">Choose a source…</option>
           {#each pairDatasets as d}
-            <option value={d.name}>{d.name}</option>
+            <option value={d.name}>{d.name}{isEncryptedDataset(d) ? ' (encrypted)' : ''}</option>
           {/each}
         </select>
-        <p class="text-xs text-gray-500 mt-1">
+      </FormField>
+
+      <FormField label="Destination dataset" id="replication-destination" required>
+        {#if encryptedSource}
+          <input
+            id="replication-destination"
+            type="text"
+            bind:value={destination}
+            placeholder="e.g. backup/encrypted-replica"
+            class="input w-full"
+            required
+          />
+        {:else}
+          <select id="replication-destination" class="input w-full" bind:value={destination} required>
+            <option value="">Choose a destination…</option>
+            {#each pairDatasets as d}
+              <option value={d.name}>{d.name}</option>
+            {/each}
+          </select>
+        {/if}
+      </FormField>
+      <p class="-mt-2 text-xs text-gray-500">
+        {#if encryptedSource}
+          The first run creates this dataset (its parent must exist). A full raw stream cannot
+          overwrite an existing dataset; later runs use the same existing replica name.
+        {:else}
           The destination is not created here; add one from its pool page first.
-        </p>
-      {/if}
-    </div>
+        {/if}
+      </p>
 
-    <div>
-      <label class="label" for="replication-snapshot">Snapshot (optional)</label>
-      <input
+      <FormField
+        label="Snapshot (optional)"
         id="replication-snapshot"
-        type="text"
-        bind:value={snapshot}
-        placeholder="e.g. naslos-2026-01-05_10-15-00"
-        class="input w-full"
-      />
-      <p class="text-xs text-gray-500 mt-1">
-        Must be an existing snapshot on the source. Leave empty to let the job create one.
-      </p>
-    </div>
+        hint="Must be an existing snapshot on the source. Leave empty to let the job create one."
+      >
+        <input
+          id="replication-snapshot"
+          type="text"
+          bind:value={snapshot}
+          placeholder="e.g. naslos-2026-01-05_10-15-00"
+          class="input w-full"
+        />
+      </FormField>
 
-    <div>
-      <label class="label" for="replication-keep">Keep newest on the destination</label>
-      <input
+      <FormField
+        label="Keep newest on the destination"
         id="replication-keep"
-        type="number"
-        min="0"
-        max="1000"
-        bind:value={pruneKeep}
-        class="input w-full"
-      />
-      <p class="text-xs text-gray-500 mt-1">
-        0 keeps every replication snapshot. Retention only removes snapshots this pair created.
-      </p>
-    </div>
+        hint="0 keeps every replication snapshot. Retention only removes snapshots this pair created."
+      >
+        <input
+          id="replication-keep"
+          type="number"
+          min="0"
+          max="1000"
+          bind:value={pruneKeep}
+          class="input w-full"
+        />
+      </FormField>
 
-    <label class="flex items-start gap-3 cursor-pointer">
-      <input type="checkbox" class="mt-1" bind:checked={recursive} />
-      <span>
-        Include child datasets (recursive send)
-        <span class="block text-xs text-gray-500">
-          Uses <code class="text-xs">zfs send -r</code>. A recursive job also verifies descendant
-          replicas and repairs a missing child subtree.
+      <label class="flex cursor-pointer items-start gap-3">
+        <input type="checkbox" class="mt-1" bind:checked={recursive} />
+        <span>
+          Include child datasets (recursive send)
+          <span class="block text-xs text-gray-500">
+            Uses <code class="font-mono text-xs">zfs send -r</code>. A recursive job also verifies
+            descendant replicas and repairs a missing child subtree.
+          </span>
         </span>
-      </span>
-    </label>
+      </label>
 
-    {#if validationError && (source || destination)}
-      <p class="text-xs text-yellow-400">{validationError}</p>
-    {:else if validationError && !source && !destination}
-      <p class="text-xs text-gray-500">Choose both datasets to continue.</p>
-    {/if}
+      {#if validationError && (source || destination)}
+        <p class="text-xs text-amber-300">{validationError}</p>
+      {:else if validationError && !source && !destination}
+        <p class="text-xs text-gray-500">Choose both datasets to continue.</p>
+      {/if}
 
-    {#if formError}
-      <div role="alert" class="p-3 rounded-lg bg-red-900/30 border border-red-700 text-red-300 text-sm">
-        {formError}
-      </div>
-    {/if}
+      {#if formError}
+        <div role="alert" class="callout callout-bad mb-0">{formError}</div>
+      {/if}
+    </form>
 
     <div slot="footer">
-      <button class="btn btn-secondary" on:click={() => (showModal = false)}>Cancel</button>
-      <button
-        class="btn btn-primary"
-        on:click={startReplication}
-        disabled={saving || !!validationError}
+      <Button variant="secondary" on:click={() => (showModal = false)}>Cancel</Button>
+      <Button
+        type="submit"
+        form="replication-form"
+        loading={saving}
+        disabled={!!validationError}
       >
-        {saving ? 'Starting…' : 'Start replication'}
-      </button>
+        Start replication
+      </Button>
     </div>
   </Modal>
 {/if}
