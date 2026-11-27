@@ -153,7 +153,8 @@
 
   async function loadDatasets() {
     try {
-      datasets = await api<Dataset[]>('/api/datasets');
+      const data = await api<unknown>('/api/datasets');
+      datasets = Array.isArray(data) ? (data as Dataset[]) : [];
       datasetsError = '';
     } catch (e) {
       datasetsError =

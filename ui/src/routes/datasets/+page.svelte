@@ -63,7 +63,8 @@
   // one must not discard the other response or merge their error messages.
   async function loadRegistry() {
     try {
-      managed = await api<ManagedDataset[]>('/api/datasets/registry');
+      const data = await api<unknown>('/api/datasets/registry');
+      managed = Array.isArray(data) ? (data as ManagedDataset[]) : [];
       registryError = '';
     } catch (e) {
       registryError =
@@ -75,7 +76,8 @@
 
   async function loadDatasets() {
     try {
-      zfs = await api<ZfsDataset[]>('/api/datasets');
+      const data = await api<unknown>('/api/datasets');
+      zfs = Array.isArray(data) ? (data as ZfsDataset[]) : [];
       datasetsError = '';
     } catch (e) {
       datasetsError =

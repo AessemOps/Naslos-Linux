@@ -161,8 +161,9 @@
   async function loadDatasets() {
     const requested = poolName;
     try {
-      const all = await api<Dataset[]>('/api/datasets');
+      const data = await api<unknown>('/api/datasets');
       if (poolName !== requested) return;
+      const all = Array.isArray(data) ? (data as Dataset[]) : [];
       const prefix = `${requested}/`;
       datasets = all.filter((d) => d.name === requested || d.name.startsWith(prefix));
       datasetsError = '';
