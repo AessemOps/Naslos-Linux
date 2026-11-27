@@ -114,7 +114,7 @@ the **workstation→apiserver LAN path flaked** with intermittent
 in-cluster access stayed healthy and Talos services reported 337h uptime;
 retrying or using the browser path worked around it. Worth watching.
 
-## Production instance (2026-11-24)
+## Production instance (2026-11-27)
 
 - **Hardware:** the production NAS is the bare-metal node `talos-zgr-9yg` at
   `192.168.1.38` (Talos v1.14.6, Kubernetes v1.37.0, control-plane Ready). The
@@ -122,17 +122,28 @@ retrying or using the browser path worked around it. Worth watching.
   `bootstrap/vm/` points at `.38`; the `vm` names (`bootstrap/vm/*`,
   `values-vm.yaml`, `install-vm`, `deploy-vm.sh`) are historical paths for the
   single node, not a VM.
-- **Deployed release:** Helm `naslos` chart **`naslos-0.7.65`**, revision 78
-  (2026-11-27), every image digest-pinned by `values-vm.yaml`. Revision 75 was
-  the in-place upgrade from 0.7.6 to 0.7.61, revision 76 the vmd stopgap,
-  revision 77 the 0.7.62 upgrade, and revision 78 the in-app 0.7.65 upgrade
-  (`/api/system/version` reports 0.7.65; the API runs the 0.7.65 digest). The
-  upgrade only started after the stale 0.7.6 Job was removed from the
-  namespace (see Open items). Verified after deploy: `/api/health` green,
-  `/` redirects to the Authelia portal, `/authelia/` answers 200,
-  `/api/users` + `/api/groups` return 200 (the LDAP-reconnect fix survives the
-  OpenLDAP restart, gotcha #22), and `/api/virt/capabilities` reports KVM +
-  both NICs.
+- **Deployed release:** Helm `naslos` chart **`naslos-0.7.68`**, revision 80
+  (2026-11-27, `make install-vm VM_IP=<node-ip>` from `master` at the
+  0.7.68 digest pins), every image digest-pinned by `values-vm.yaml`. It
+  ships the UI redesign (#284-#288), the vmd libpam security update (#289)
+  and the chunked-upload flush fix (#290). Revision 79 was 0.7.66. Verified after deploy: every `naslos`/`naslos-privileged` pod
+  Running on the 0.7.68 digests, `/api/health` 200, `/` redirects to the
+  Authelia portal.
+- **Live Playwright on 0.7.68 (2026-11-27):** 117 passed, 1 failed, 6 skipped
+  across all 24 specs. The failure and one skip were test-contract issues
+  (`apps.spec.ts`: an Env Demo heading ambiguous with the inert catalog card;
+  the dataset helper refusing a 400 "already exists" for leftover
+  `e2e-apps-*` datasets), fixed on `fix/live-drill-0.7.68`, where
+  `apps.spec.ts` re-ran 20/20 live. Remaining skips: the VM console
+  preflight (no VM on the node), the opt-in MTU apply drill, and two network
+  CIDR/gateway tests that found no links (next item).
+- **Network page shows no links (API defect, fix pending release):**
+  `/api/network` returned `links: []` although Talos reports two `ether`
+  links. Talos `LinkStatus` keeps the name in `metadata.id` (empty
+  `spec.name`) and carrier in `linkState`, not `up`;
+  `rust/api/src/network/inventory.rs` now reads both, with a unit test on the
+  live shape (`fix/live-drill-0.7.68`). Needs the next release to go live;
+  then re-run `tests/network.spec.ts`.
 - **vmd image packaging defect (fixed in 0.7.62, PR #278):** every vmd image
   built since the 1.100 toolchain bump linked against the `rust:1.100-slim`
   builder's Debian 13 glibc 2.41 while the runtime stage is Debian 12
@@ -140,19 +151,18 @@ retrying or using the browser path worked around it. Worth watching.
   `version GLIBC_2.38 not found` (the node had been running an older drill
   build). `vmd/Dockerfile` now pins `rust:1.100-slim-bookworm`; the 0.7.62 vmd
   image (`7a223872…`) starts cleanly and revision 77 ran it.
-- **Latest release:** `v0.7.66` (2026-11-27) and installer `naslos-v0.7.66`
-  are published; `naslos-install-pack-0.7.66.tar.gz` is attached with every
-  image digest-pinned. It ships the upgrader-lock fix (#282): a Job left at
-  `SuccessCriteriaMet` with only an uncounted terminated pod no longer reports
-  `pending`, so it cannot block later operations. The node runs **0.7.65 at
-  revision 78**, so its API still has the pre-fix check; upgrade to 0.7.66
-  (which includes 0.7.65's ARC split, dashboard split and OpenLDAP cap, #281)
-  to carry the fix. The StatefulSet still carries the temporary `ulimit`
-  `command` override: the in-app upgrade does not remove a live-only command
-  field, and the override is redundant now that the 0.7.65 image
-  (`2d3d3ef4…`) caps `RLIMIT_NOFILE` itself; `make install-vm` or patching the
-  StatefulSet command away removes it. The 0.7.62 vmd glibc fix and the 0.7.61
-  Traefik/LDAP hotfixes (gotchas #21/#22) remain in effect.
+- **Latest release:** `v0.7.68` (2026-11-27), deployed (revision 80);
+  `naslos-install-pack-0.7.68.tar.gz` is attached with every image
+  digest-pinned, and the installer rebuild for `naslos-v0.7.68` was
+  dispatched. **0.7.67 was skipped:** its first run pushed the `:0.7.67`
+  images, then the pack guard rejected a stale openldap digest pin left in
+  `values-vm.yaml` (the bump must also turn the inline
+  `openldap.image: …@sha256:` back into the `:X.Y.Z` tag); the retry refused
+  to move existing image tags, so the packless `v0.7.67` tag was deleted and
+  the version bumped. The `:0.7.67` GHCR images still exist but no release or
+  pack references them. Also note: the pack job needs CI green on the tagged
+  commit, so tagging right after pushing the release commit fails `pack`
+  until CI finishes; re-run the failed job.
 - **0.7.1–0.7.62 deploy behavior:** `make install-vm` requires
   `VM_IP=<node-ip>` and installs `local-path` + the `naslos-talosconfig`
   Secret; Traefik uses namespaced RBAC watching the release namespace plus the
@@ -171,7 +181,8 @@ retrying or using the browser path worked around it. Worth watching.
   runs that image (`2d3d3ef4…`), and idle RSS stays near 10 MiB. The
   StatefulSet still carries the older temporary `command` override
   (`ulimit -Sn 8192` before the entrypoint) because Helm keeps live-only
-  fields across an in-app upgrade; it is harmless and a `make install-vm` or a
+  fields; it survived the revision 80 `make install-vm` too (Helm's
+  three-way merge keeps it), is harmless, and only a
   patch of the StatefulSet command removes it.
 - **Dashboard ARC split (released and deployed in 0.7.65):** `/api/metrics`
   and `/api/dashboard` carry `memory.arcSize`/`arcMax` from the ZFS `arcstats`,
@@ -188,6 +199,12 @@ retrying or using the browser path worked around it. Worth watching.
   probe's invalid `insecureSkipTLSVerify`, and moved the Buddy store to
   `/var/mnt/ssd-storage/naslos-buddy`.
 - **Release notes since 0.3.7:**
+  - `0.7.68` (2026-11-27) — UI redesign: shared design system and tokens, a
+    responsive shell with a mobile drawer and skip link, shared page, form,
+    table and state components, every page rebuilt with WCAG AA contrast,
+    keyboard access and keep-last-data refresh handling (#284-#288); vmd
+    runtime `dist-upgrade` clears CVE-2025-6020 (#289); vmd flushes each
+    upload chunk before acknowledging it (#290).
   - `0.7.66` (2026-11-27) — the upgrader lock releases on a terminal Job
     (#282): `Complete`, `SuccessCriteriaMet` with no active pod,
     `Failed`/`FailureTarget` and a pod recorded only in
@@ -375,13 +392,12 @@ retrying or using the browser path worked around it. Worth watching.
   `naslos-shail-ovh-tls` are present. The baseline pool has **32 provisioned
   slots with a usable limit of 20** (`GET /api/apps/namespaces`: 9 used, 11
   available); the privileged pool has 2 used of 4, `naslos-app-p3..p4` free.
-- **Update check:** current deployed `0.7.65`; the GitHub check offers
-  `0.7.66` after a refresh (`/api/system/updates`).
+- **Update check:** current deployed `0.7.68`, the latest release.
 
 ### Open items
 
 - **Stale upgrader Job held the system-operation lock (fixed in 0.7.66,
-  #282):** the 0.7.6 upgrade Job finished its pod but Kubernetes left it at
+  #282; deployed since revision 80):** the 0.7.6 upgrade Job finished its pod but Kubernetes left it at
   `SuccessCriteriaMet` with the pod only in `uncountedTerminatedPods` and no
   `succeeded` count, so `read_job_status` reported `pending` forever and every
   later upgrade/revert/reboot failed with "another system operation is
