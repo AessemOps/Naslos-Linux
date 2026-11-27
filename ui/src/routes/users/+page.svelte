@@ -1,9 +1,14 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { api } from '$lib/api';
+  import AsyncState from '$lib/components/AsyncState.svelte';
+  import Button from '$lib/components/Button.svelte';
+  import DataTable from '$lib/components/DataTable.svelte';
   import EmptyState from '$lib/components/EmptyState.svelte';
-  import LoadingState from '$lib/components/LoadingState.svelte';
+  import PageHeader from '$lib/components/PageHeader.svelte';
   import StatusBadge from '$lib/components/StatusBadge.svelte';
   import UserForm from '$lib/components/UserForm.svelte';
+  import { confirmAction } from '$lib/stores/confirm';
 
   interface User {
     uid: string;
@@ -17,20 +22,27 @@
 
   let users: User[] = [];
   let loading = true;
-  let error = '';
+  let loadError = '';
+  let actionError = '';
   let showForm = false;
   let editingUser: User | null = null;
+  // The row action in flight, e.g. "jdoe:toggle"; keeps the buttons honest
+  // without disabling unrelated rows.
+  let busy = '';
+
+  function message(e: unknown): string {
+    return e instanceof Error ? e.message : String(e);
+  }
 
   async function loadUsers() {
     loading = true;
+    loadError = '';
     try {
-      const res = await fetch('/api/users');
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      const data = await api<User[]>('/api/users');
       users = Array.isArray(data) ? data : [];
     } catch (e) {
-      console.error('Failed to load users:', e);
-      error = `Could not load users: ${e instanceof Error ? e.message : String(e)}`;
+      users = [];
+      loadError = `Could not load users: ${message(e)}`;
     } finally {
       loading = false;
     }
@@ -46,101 +58,152 @@
     showForm = true;
   }
 
-  async function deleteUser(uid: string) {
-    if (!confirm(`Delete user "${uid}"? This will also remove their SMB access.`)) return;
-    error = '';
+  async function deleteUser(user: User) {
+    if (
+      !(await confirmAction({
+        title: 'Delete user',
+        message: `Delete “${user.uid}”? This will also remove their SMB access.`,
+        confirmLabel: 'Delete',
+        tone: 'danger'
+      }))
+    ) {
+      return;
+    }
+    actionError = '';
+    busy = `${user.uid}:delete`;
     try {
-      const res = await fetch(`/api/users/${encodeURIComponent(uid)}`, { method: 'DELETE' });
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`);
-      }
-      loadUsers();
+      await api(`/api/users/${encodeURIComponent(user.uid)}`, { method: 'DELETE' });
+      await loadUsers();
     } catch (e) {
-      error = `Failed to delete ${uid}: ` + e;
+      actionError = `Failed to delete ${user.uid}: ${message(e)}`;
+    } finally {
+      busy = '';
     }
   }
 
   async function toggleUser(user: User) {
     const action = user.enabled ? 'disable' : 'enable';
-    error = '';
+    actionError = '';
+    busy = `${user.uid}:toggle`;
     try {
-      const res = await fetch(`/api/users/${encodeURIComponent(user.uid)}/${encodeURIComponent(action)}`, { method: 'POST' });
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`);
-      }
-      loadUsers();
+      await api(`/api/users/${encodeURIComponent(user.uid)}/${encodeURIComponent(action)}`, {
+        method: 'POST'
+      });
+      await loadUsers();
     } catch (e) {
-      error = `Failed to ${action} ${user.uid}: ` + e;
+      actionError = `Failed to ${action} ${user.uid}: ${message(e)}`;
+    } finally {
+      busy = '';
     }
   }
 
   onMount(loadUsers);
 </script>
 
-<div class="max-w-5xl mx-auto">
-  <div class="flex justify-between items-center mb-6">
-    <div>
-      <h1 class="text-3xl font-bold mb-2">Users</h1>
-      <p class="text-gray-400">Manage user accounts. One password grants access to both the web interface and file shares.</p>
-    </div>
-    <button class="btn btn-primary" on:click={newUser}>+ New User</button>
-  </div>
+<div class="mx-auto max-w-6xl">
+  <PageHeader
+    title="Users"
+    subtitle="Manage user accounts. One password grants access to both the web interface and file shares."
+    breadcrumbs={[{ label: 'Access' }, { label: 'Users' }]}
+  >
+    <Button slot="actions" on:click={newUser}>+ New User</Button>
+  </PageHeader>
 
-  {#if error}
-    <div role="alert" class="card border-red-700 bg-red-900/30 text-red-300 p-4 mb-4">{error}</div>
+  {#if actionError}
+    <div role="alert" class="callout callout-bad">{actionError}</div>
   {/if}
 
-  {#if loading}
-    <LoadingState label="Loading users..." />
-  {:else if users.length === 0}
-    <EmptyState icon="user" title="No Users" detail="Create your first user to enable authentication.">
-      <button class="btn btn-primary" on:click={newUser}>Create User</button>
-    </EmptyState>
-  {:else}
-    <div class="card p-0 overflow-hidden">
-      <table class="w-full table-fixed">
-        <thead>
-          <tr class="text-left text-gray-400 text-sm border-b border-naslos-border bg-naslos-dark">
-            <th class="p-4 font-medium w-48">User</th>
-            <th class="p-4 font-medium w-56">Email</th>
-            <th class="p-4 font-medium">Groups</th>
-            <th class="p-4 font-medium w-28">Status</th>
-            <th class="p-4 font-medium w-48">Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          {#each users as user}
-            <tr class="border-b border-naslos-border last:border-0 hover:bg-naslos-dark/50">
-              <td class="p-4 align-top">
-                <div class="font-medium truncate" title={user.displayName || user.uid}>{user.displayName || user.uid}</div>
-                <div class="text-sm text-gray-500 truncate" title={user.uid}>{user.uid}</div>
-              </td>
-              <td class="p-4 text-gray-300 align-top truncate" title={user.email || ''}>{user.email || '—'}</td>
-              <td class="p-4 align-top">
-                <div class="flex flex-wrap gap-1 content-start">
-                  {#each user.groups as group}
-                    <span class="text-xs px-2 py-0.5 rounded bg-naslos-border text-gray-300 whitespace-nowrap">{group}</span>
-                  {/each}
-                </div>
-              </td>
-              <td class="p-4 align-top">
-                <StatusBadge state={user.enabled ? 'active' : 'disabled'} label={user.enabled ? 'Active' : 'Disabled'} />
-              </td>
-              <td class="p-4 align-top">
-                <div class="flex gap-2 flex-wrap">
-                  <button class="btn btn-secondary text-sm" on:click={() => editUser(user)}>Edit</button>
-                  <button class="btn btn-secondary text-sm" on:click={() => toggleUser(user)}>{user.enabled ? 'Disable' : 'Enable'}</button>
-                  <button class="btn btn-danger text-sm" on:click={() => deleteUser(user.uid)}>Delete</button>
-                </div>
-              </td>
+  <AsyncState
+    {loading}
+    error={loadError}
+    loadingText="Loading users..."
+    onRetry={loadUsers}
+  >
+    {#if users.length === 0}
+      <EmptyState
+        icon="user"
+        title="No Users"
+        detail="Create your first user to enable authentication."
+      >
+        <Button slot="action" on:click={newUser}>Create User</Button>
+      </EmptyState>
+    {:else}
+      <DataTable>
+        <table class="min-w-[48rem]">
+          <thead>
+            <tr>
+              <th scope="col">User</th>
+              <th scope="col">Email</th>
+              <th scope="col">Groups</th>
+              <th scope="col">Status</th>
+              <th scope="col">Actions</th>
             </tr>
-          {/each}
-        </tbody>
-      </table>
-    </div>
-  {/if}
+          </thead>
+          <tbody>
+            {#each users as user (user.uid)}
+              <tr>
+                <td>
+                  <div class="font-medium" title={user.displayName || user.uid}>
+                    {user.displayName || user.uid}
+                  </div>
+                  <div class="font-mono text-xs text-gray-500" title={user.uid}>{user.uid}</div>
+                </td>
+                <td class="whitespace-nowrap text-gray-300" title={user.email || ''}>
+                  {user.email || '—'}
+                </td>
+                <td>
+                  <div class="flex flex-wrap gap-1">
+                    {#each user.groups as group (group)}
+                      <span class="badge badge-neutral">{group}</span>
+                    {/each}
+                  </div>
+                </td>
+                <td>
+                  <StatusBadge
+                    state={user.enabled ? 'active' : 'disabled'}
+                    label={user.enabled ? 'Active' : 'Disabled'}
+                  />
+                </td>
+                <td>
+                  <div class="flex flex-wrap gap-2">
+                    <Button size="sm" variant="secondary" on:click={() => editUser(user)}>
+                      Edit
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      loading={busy === `${user.uid}:toggle`}
+                      disabled={!!busy && busy !== `${user.uid}:toggle`}
+                      on:click={() => toggleUser(user)}
+                    >
+                      {user.enabled ? 'Disable' : 'Enable'}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="danger"
+                      loading={busy === `${user.uid}:delete`}
+                      disabled={!!busy && busy !== `${user.uid}:delete`}
+                      on:click={() => deleteUser(user)}
+                    >
+                      Delete
+                    </Button>
+                  </div>
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </DataTable>
+    {/if}
+  </AsyncState>
 </div>
 
 {#if showForm}
-  <UserForm user={editingUser} on:close={() => { showForm = false; loadUsers(); }} />
+  <UserForm
+    user={editingUser}
+    on:close={() => {
+      showForm = false;
+      loadUsers();
+    }}
+  />
 {/if}

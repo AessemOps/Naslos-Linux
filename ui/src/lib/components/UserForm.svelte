@@ -1,7 +1,9 @@
 <script lang="ts">
-  import { modal } from '$lib/actions/modal';
-  import Icon from '$lib/components/Icon.svelte';
-  import { onMount, createEventDispatcher } from 'svelte';
+  import { createEventDispatcher, onMount } from 'svelte';
+  import { api, ApiError } from '$lib/api';
+  import Button from '$lib/components/Button.svelte';
+  import FormField from '$lib/components/FormField.svelte';
+  import Modal from '$lib/components/Modal.svelte';
 
   interface User {
     uid: string;
@@ -14,7 +16,7 @@
 
   export let user: User | null = null;
 
-  const dispatch = createEventDispatcher();
+  const dispatch = createEventDispatcher<{ close: void }>();
 
   let uid = '';
   let displayName = '';
@@ -29,13 +31,10 @@
 
   async function loadGroups() {
     try {
-      const res = await fetch('/api/groups');
-      if (res.ok) {
-        const data = await res.json();
-        availableGroups = data.map((g: any) => g.cn || g.name);
-      }
-    } catch (e) {
-      // Ignore
+      const data = await api<Array<{ cn?: string; name?: string }>>('/api/groups');
+      availableGroups = (Array.isArray(data) ? data : []).map((g) => g.cn || g.name || '').filter(Boolean);
+    } catch {
+      // The picker stays empty; membership is preserved on save.
     }
   }
 
@@ -52,10 +51,14 @@
 
   function toggleGroup(group: string) {
     if (groups.includes(group)) {
-      groups = groups.filter(g => g !== group);
+      groups = groups.filter((g) => g !== group);
     } else {
       groups = [...groups, group];
     }
+  }
+
+  function failMessage(e: unknown, fallback: string): string {
+    return e instanceof ApiError ? e.message : fallback;
   }
 
   async function save() {
@@ -64,56 +67,43 @@
 
     // A password is not part of the update endpoint: PUT /api/users/{uid}
     // handles attributes and group membership only, and the create endpoint
-    // takes the password inline. Sending it in the PUT body (as this form used
-    // to) was a silent no-op - "Update" reported success and changed nothing.
-    // Editing now calls POST /api/users/{uid}/password, which updates LDAP and
-    // the Samba NT hash (FR-IDN-09).
-    const body: any = { uid, displayName, email, firstName, lastName, groups };
-
-    async function failMessage(res: Response, fallback: string): Promise<string> {
-      try {
-        const data = await res.json();
-        return data.error || fallback;
-      } catch {
-        return fallback;
-      }
-    }
+    // takes the password inline. Editing calls the dedicated password endpoint
+    // so LDAP and the Samba NT hash both change (FR-IDN-09).
+    const body: Record<string, unknown> = { uid, displayName, email, firstName, lastName, groups };
 
     try {
       if (!user) {
         body.password = password;
-        const res = await fetch('/api/users', {
+        await api('/api/users', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body)
         });
-        if (!res.ok) {
-          throw new Error(await failMessage(res, 'Failed to create user'));
-        }
       } else {
-        const res = await fetch(`/api/users/${encodeURIComponent(user.uid)}`, {
+        await api(`/api/users/${encodeURIComponent(user.uid)}`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body)
         });
-        if (!res.ok) {
-          throw new Error(await failMessage(res, 'Failed to save user'));
-        }
 
         if (password) {
-          const pwRes = await fetch(`/api/users/${encodeURIComponent(user.uid)}/password`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ password })
-          });
-          if (!pwRes.ok) {
-            throw new Error(await failMessage(pwRes, 'User saved, but the password change failed'));
+          try {
+            await api(`/api/users/${encodeURIComponent(user.uid)}/password`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ password })
+            });
+          } catch (e) {
+            throw new Error(failMessage(e, 'User saved, but the password change failed'));
           }
         }
       }
       dispatch('close');
-    } catch (e: any) {
-      error = e.message;
+    } catch (e) {
+      error = failMessage(
+        e,
+        user ? 'Failed to save user' : 'Failed to create user'
+      );
     } finally {
       saving = false;
     }
@@ -125,79 +115,101 @@
   });
 </script>
 
-<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-<div class="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" use:modal={{ onClose: () => dispatch('close') }} on:click|self={() => dispatch('close')}>
-  <div class="bg-naslos-surface rounded-2xl border border-naslos-border w-full max-w-lg max-h-[90vh] overflow-hidden flex flex-col">
-    <div class="p-6 border-b border-naslos-border flex items-center justify-between">
-      <h2 class="text-xl font-bold">{user ? 'Edit User' : 'New User'}</h2>
-      <button class="icon-btn -mr-2 text-gray-400 hover:text-naslos-strong hover:bg-naslos-border" aria-label="Close" on:click={() => dispatch('close')}><Icon name="x" /></button>
+<Modal
+  open={true}
+  title={user ? 'Edit User' : 'New User'}
+  size="md"
+  onClose={() => dispatch('close')}
+>
+  <form id="user-form" class="space-y-4" on:submit|preventDefault={save}>
+    <FormField label="Username" id="user-field-1" required>
+      <input
+        id="user-field-1"
+        type="text"
+        bind:value={uid}
+        placeholder="e.g. john"
+        class="input w-full"
+        disabled={!!user}
+      />
+    </FormField>
+
+    <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+      <FormField label="First Name" id="user-field-2">
+        <input id="user-field-2" type="text" bind:value={firstName} class="input w-full" />
+      </FormField>
+      <FormField label="Last Name" id="user-field-3" required>
+        <input id="user-field-3" type="text" bind:value={lastName} class="input w-full" />
+      </FormField>
     </div>
 
-    <div class="flex-1 overflow-y-auto p-6 space-y-4">
-      <div>
-        <label class="label" for="user-field-1">Username *</label>
-        <input id="user-field-1" type="text" bind:value={uid} placeholder="e.g. john" class="input w-full" disabled={!!user} />
-      </div>
+    <FormField label="Display Name" id="user-field-4">
+      <input id="user-field-4" type="text" bind:value={displayName} class="input w-full" />
+    </FormField>
 
-      <div class="grid grid-cols-2 gap-4">
-        <div>
-          <label class="label" for="user-field-2">First Name</label>
-          <input id="user-field-2" type="text" bind:value={firstName} class="input w-full" />
-        </div>
-        <div>
-          <label class="label" for="user-field-3">Last Name *</label>
-          <input id="user-field-3" type="text" bind:value={lastName} class="input w-full" />
-        </div>
-      </div>
+    <FormField label="Email" id="user-field-5">
+      <input id="user-field-5" type="email" bind:value={email} class="input w-full" />
+    </FormField>
 
-      <div>
-        <label class="label" for="user-field-4">Display Name</label>
-        <input id="user-field-4" type="text" bind:value={displayName} class="input w-full" />
-      </div>
+    <FormField
+      label={user ? 'New Password (leave blank to keep current)' : 'Password'}
+      id="user-field-6"
+      required={!user}
+      hint="This password is used for both web login and file shares (SMB)."
+    >
+      <!-- required on create only: the API rejects a passwordless new account
+           (NAS-010), and editing leaves it blank to keep the current one. -->
+      <input
+        id="user-field-6"
+        type="password"
+        bind:value={password}
+        required={!user}
+        class="input w-full"
+      />
+    </FormField>
 
-      <div>
-        <label class="label" for="user-field-5">Email</label>
-        <input id="user-field-5" type="email" bind:value={email} class="input w-full" />
-      </div>
-
-      <div>
-        <label class="label" for="user-field-6">{user ? 'New Password (leave blank to keep current)' : 'Password'}</label>
-        <!-- required on create only: the API rejects a passwordless new account
-             (NAS-010), and editing leaves it blank to keep the current one. -->
-        <input id="user-field-6" type="password" bind:value={password} required={!user} class="input w-full" />
-        <p class="text-xs text-gray-500 mt-1">This password is used for both web login and file shares (SMB).</p>
-        <div class="mt-2 p-3 rounded-lg bg-naslos-dark border border-naslos-border text-xs text-gray-400 space-y-1">
-          <p class="font-medium text-gray-300">Applying a password to file shares takes a moment</p>
-          <!-- Kept as single-source-line sentences: wrapping the text in the template puts the
-               newline and indentation into the DOM, which splits the sentence when matched. -->
-          <p>Web login changes immediately, but SMB picks the new password up within about 3 seconds &mdash; a share login may still be refused briefly after saving.</p>
-          {#if user}
-            <p>File share sessions that are already connected keep working with the old password until that client reconnects, so disconnect and reconnect (or unmount and remount) to be sure. Some clients also remember the old password and need it removed before they will ask for the new one.</p>
-          {/if}
-        </div>
-      </div>
-
-      <div>
-        <div class="label" id="user-groups-label">Groups</div>
-        <div class="space-y-2" role="group" aria-labelledby="user-groups-label">
-          {#each availableGroups as group}
-            <label class="flex items-center gap-3 p-2 rounded hover:bg-naslos-dark cursor-pointer">
-              <input type="checkbox" checked={groups.includes(group)} on:change={() => toggleGroup(group)} class="w-4 h-4 rounded" />
-              <span class="text-gray-300">{group}</span>
-            </label>
-          {/each}
-        </div>
-        <p class="text-xs text-gray-500 mt-1">naslos_admins = full access, naslos_users = read-only</p>
-      </div>
-
-      {#if error}<div role="alert" class="p-3 rounded-lg bg-red-900/30 border border-red-700 text-red-300 text-sm">{error}</div>{/if}
+    <div class="rounded-lg border border-naslos-border bg-naslos-dark p-3 text-xs text-gray-400">
+      <p class="font-medium text-gray-300">Applying a password to file shares takes a moment</p>
+      <!-- Kept as single-source-line sentences: wrapping the text in the template
+           puts the newline and indentation into the DOM, which splits the
+           sentence when matched. -->
+      <p>Web login changes immediately, but SMB picks the new password up within about 3 seconds &mdash; a share login may still be refused briefly after saving.</p>
+      {#if user}
+        <p>File share sessions that are already connected keep working with the old password until that client reconnects, so disconnect and reconnect (or unmount and remount) to be sure. Some clients also remember the old password and need it removed before they will ask for the new one.</p>
+      {/if}
     </div>
 
-    <div class="p-6 border-t border-naslos-border flex justify-end gap-3">
-      <button class="btn btn-secondary" on:click={() => dispatch('close')}>Cancel</button>
-      <button class="btn btn-primary" on:click={save} disabled={saving || !uid || !lastName}>
-        {saving ? 'Saving...' : user ? 'Update' : 'Create'}
-      </button>
+    <div>
+      <div class="label" id="user-groups-label">Groups</div>
+      <div class="space-y-1" role="group" aria-labelledby="user-groups-label">
+        {#each availableGroups as group (group)}
+          <label class="flex min-h-10 cursor-pointer items-center gap-3 rounded px-2 hover:bg-naslos-dark">
+            <input
+              type="checkbox"
+              checked={groups.includes(group)}
+              on:change={() => toggleGroup(group)}
+              class="h-4 w-4 rounded"
+            />
+            <span class="text-gray-300">{group}</span>
+          </label>
+        {/each}
+      </div>
+      <p class="mt-1 text-xs text-gray-500">naslos_admins = full access, naslos_users = read-only</p>
     </div>
-  </div>
-</div>
+
+    {#if error}
+      <div role="alert" class="callout callout-bad mb-0">{error}</div>
+    {/if}
+  </form>
+
+  <svelte:fragment slot="footer">
+    <Button variant="secondary" on:click={() => dispatch('close')}>Cancel</Button>
+    <Button
+      type="submit"
+      form="user-form"
+      loading={saving}
+      disabled={!uid || !lastName}
+    >
+      {saving ? 'Saving...' : user ? 'Update' : 'Create'}
+    </Button>
+  </svelte:fragment>
+</Modal>

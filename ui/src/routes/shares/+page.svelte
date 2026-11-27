@@ -1,9 +1,14 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { api } from '$lib/api';
+  import AsyncState from '$lib/components/AsyncState.svelte';
+  import Button from '$lib/components/Button.svelte';
   import EmptyState from '$lib/components/EmptyState.svelte';
   import Icon from '$lib/components/Icon.svelte';
-  import LoadingState from '$lib/components/LoadingState.svelte';
+  import PageHeader from '$lib/components/PageHeader.svelte';
   import ShareForm from '$lib/components/ShareForm.svelte';
+  import StatusBadge from '$lib/components/StatusBadge.svelte';
+  import { confirmAction } from '$lib/stores/confirm';
 
   interface Share {
     name: string;
@@ -22,6 +27,8 @@
 
   let shares: Share[] = [];
   let loading = true;
+  let loadError = '';
+  let actionError = '';
   let showForm = false;
   let editingShare: Share | null = null;
   // The host the operator reached the NAS on. SMB is served by a hostNetwork
@@ -29,18 +36,21 @@
   // onMount because it reads `window` (this component is pre-rendered).
   let host = '';
   let copied = '';
-  let error = '';
+  let busy = '';
+
+  function message(e: unknown): string {
+    return e instanceof Error ? e.message : String(e);
+  }
 
   async function loadShares() {
     loading = true;
+    loadError = '';
     try {
-      const res = await fetch('/api/shares');
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      const data = await api<Share[]>('/api/shares');
       shares = Array.isArray(data) ? data : [];
     } catch (e) {
-      console.error('Failed to load shares:', e);
-      error = `Could not load shares: ${e instanceof Error ? e.message : String(e)}`;
+      shares = [];
+      loadError = `Could not load shares: ${message(e)}`;
     } finally {
       loading = false;
     }
@@ -66,7 +76,9 @@
     try {
       await navigator.clipboard.writeText(url);
       copied = url;
-      setTimeout(() => { if (copied === url) copied = ''; }, 2000);
+      setTimeout(() => {
+        if (copied === url) copied = '';
+      }, 2000);
     } catch (e) {
       console.error('Failed to copy:', e);
     }
@@ -82,35 +94,52 @@
     showForm = true;
   }
 
-  async function deleteShare(name: string) {
-    if (!confirm(`Delete share "${name}"?`)) return;
-    error = '';
+  async function deleteShare(share: Share) {
+    if (
+      !(await confirmAction({
+        title: 'Delete share',
+        message: `Delete share “${share.name}”? The dataset and its files are kept.`,
+        confirmLabel: 'Delete',
+        tone: 'danger'
+      }))
+    ) {
+      return;
+    }
+    actionError = '';
+    busy = share.name;
     try {
-      const res = await fetch(`/api/shares/${encodeURIComponent(name)}`, { method: 'DELETE' });
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`);
-      }
-      loadShares();
+      await api(`/api/shares/${encodeURIComponent(share.name)}`, { method: 'DELETE' });
+      await loadShares();
     } catch (e) {
-      error = `Failed to delete ${name}: ` + e;
+      actionError = `Failed to delete ${share.name}: ${message(e)}`;
+    } finally {
+      busy = '';
     }
   }
 
   function protocolIcon(protocol: string): string {
     switch (protocol) {
-      case 'smb': return 'monitor';
-      case 'nfs': return 'hard-drive';
-      case 'afp': return 'folder';
-      default: return 'folder';
+      case 'smb':
+        return 'monitor';
+      case 'nfs':
+        return 'hard-drive';
+      case 'afp':
+        return 'folder';
+      default:
+        return 'folder';
     }
   }
 
   function protocolLabel(protocol: string): string {
     switch (protocol) {
-      case 'smb': return 'SMB/CIFS';
-      case 'nfs': return 'NFS';
-      case 'afp': return 'AFP (Time Machine)';
-      default: return protocol;
+      case 'smb':
+        return 'SMB/CIFS';
+      case 'nfs':
+        return 'NFS';
+      case 'afp':
+        return 'AFP (Time Machine)';
+      default:
+        return protocol;
     }
   }
 
@@ -120,74 +149,99 @@
   });
 </script>
 
-<div class="max-w-5xl mx-auto">
-  <div class="flex justify-between items-center mb-6">
-    <div>
-      <h1 class="text-3xl font-bold mb-2">Shares</h1>
-      <p class="text-gray-400">Configure SMB, NFS, and Time Machine shares. Connect to an SMB share with the address shown on its card.</p>
-    </div>
-    <button class="btn btn-primary" on:click={newShare}>+ New Share</button>
-  </div>
+<div class="mx-auto max-w-6xl">
+  <PageHeader
+    title="Shares"
+    subtitle="Configure SMB, NFS, and Time Machine shares. Connect to an SMB share with the address shown on its card."
+    breadcrumbs={[{ label: 'Access' }, { label: 'Shares' }]}
+  >
+    <Button slot="actions" on:click={newShare}>+ New Share</Button>
+  </PageHeader>
 
-  {#if error}
-    <div role="alert" class="card border-red-700 bg-red-900/30 text-red-300 p-4 mb-4">{error}</div>
+  {#if actionError}
+    <div role="alert" class="callout callout-bad">{actionError}</div>
   {/if}
 
-  {#if loading}
-    <LoadingState label="Loading shares..." />
-  {:else if shares.length === 0}
-    <EmptyState icon="link" title="No Shares Configured" detail="Create your first share to start serving files to your network.">
-      <button class="btn btn-primary" on:click={newShare}>Create Share</button>
-    </EmptyState>
-  {:else}
-    <div class="space-y-3">
-      {#each shares as share}
-        <div class="card flex items-center gap-4">
-          <div class="text-gray-400" aria-hidden="true"><Icon name={protocolIcon(share.protocol)} size={28} /></div>
-          <div class="flex-1">
-            <div class="flex items-center gap-2 mb-1">
-              <h3 class="font-bold">{share.name}</h3>
-              <span class="text-xs px-2 py-0.5 rounded bg-naslos-border text-gray-300">{protocolLabel(share.protocol)}</span>
-              {#if share.timeMachine}<span class="text-xs px-2 py-0.5 rounded bg-blue-900/50 text-blue-300">Time Machine</span>{/if}
-              {#if !share.enabled}<span class="text-xs px-2 py-0.5 rounded bg-yellow-900/50 text-yellow-300">Disabled</span>{/if}
+  <AsyncState {loading} error={loadError} loadingText="Loading shares..." onRetry={loadShares}>
+    {#if shares.length === 0}
+      <EmptyState
+        icon="link"
+        title="No Shares Configured"
+        detail="Create your first share to start serving files to your network."
+      >
+        <Button slot="action" on:click={newShare}>Create Share</Button>
+      </EmptyState>
+    {:else}
+      <div class="space-y-3">
+        {#each shares as share (share.name)}
+          <div class="card flex flex-col gap-4 sm:flex-row sm:items-start">
+            <div class="text-gray-400" aria-hidden="true">
+              <Icon name={protocolIcon(share.protocol)} size={28} />
             </div>
-            <p class="text-sm text-gray-400">{share.path}</p>
-            {#if share.description}<p class="text-sm text-gray-500 mt-1">{share.description}</p>{/if}
-            {#if (share.validGroups?.length ?? 0) > 0 || (share.validUsers?.length ?? 0) > 0}
-              <p class="text-xs text-gray-500 mt-1">
-                Access:
-                {#if (share.validUsers?.length ?? 0) > 0}
-                  <span class="text-gray-400">users {share.validUsers.join(', ')}</span>
+            <div class="min-w-0 flex-1">
+              <div class="mb-1 flex flex-wrap items-center gap-2">
+                <h2 class="font-bold">{share.name}</h2>
+                <span class="badge badge-neutral">{protocolLabel(share.protocol)}</span>
+                {#if share.timeMachine}
+                  <span class="badge badge-info">Time Machine</span>
                 {/if}
-                {#if (share.validUsers?.length ?? 0) > 0 && (share.validGroups?.length ?? 0) > 0}<span class="text-gray-500"> · </span>{/if}
-                {#if (share.validGroups?.length ?? 0) > 0}
-                  <span class="text-gray-400">groups {share.validGroups.join(', ')}</span>
+                {#if !share.enabled}
+                  <StatusBadge state="disabled" label="Disabled" tone="warn" />
                 {/if}
-              </p>
-            {/if}
-            {#if connectURL(share)}
-              <div class="flex items-center gap-2 mt-2">
-                <code class="text-xs bg-naslos-dark border border-naslos-border rounded px-2 py-1 text-naslos-link select-all">{connectURL(share)}</code>
-                <button
-                  class="text-xs px-2 py-1.5 rounded border border-naslos-border text-gray-300 hover:text-naslos-strong hover:bg-naslos-border transition-colors"
-                  on:click={() => copyURL(connectURL(share))}
-                  title="Copy the share address"
-                >{copied === connectURL(share) ? 'Copied' : 'Copy'}</button>
               </div>
-            {:else if !share.enabled}
-              <p class="text-xs text-gray-500 mt-2">Disabled — not reachable until enabled.</p>
-            {/if}
+              <p class="break-all font-mono text-sm text-gray-400">{share.path}</p>
+              {#if share.description}
+                <p class="mt-1 text-sm text-gray-500">{share.description}</p>
+              {/if}
+              {#if (share.validGroups?.length ?? 0) > 0 || (share.validUsers?.length ?? 0) > 0}
+                <p class="mt-1 text-xs text-gray-500">
+                  Access:
+                  {#if (share.validUsers?.length ?? 0) > 0}
+                    <span class="text-gray-400">users {share.validUsers.join(', ')}</span>
+                  {/if}
+                  {#if (share.validUsers?.length ?? 0) > 0 && (share.validGroups?.length ?? 0) > 0}<span class="text-gray-500"> · </span>{/if}
+                  {#if (share.validGroups?.length ?? 0) > 0}
+                    <span class="text-gray-400">groups {share.validGroups.join(', ')}</span>
+                  {/if}
+                </p>
+              {/if}
+              {#if connectURL(share)}
+                <div class="mt-2 flex flex-wrap items-center gap-2">
+                  <code class="select-all rounded border border-naslos-border bg-naslos-dark px-2 py-1 text-xs text-naslos-link">{connectURL(share)}</code>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    title="Copy the share address"
+                    on:click={() => copyURL(connectURL(share))}
+                  >{copied === connectURL(share) ? 'Copied' : 'Copy'}</Button>
+                </div>
+              {:else if !share.enabled}
+                <p class="mt-2 text-xs text-gray-500">Disabled — not reachable until enabled.</p>
+              {/if}
+            </div>
+            <div class="flex flex-wrap gap-2">
+              <Button size="sm" variant="secondary" on:click={() => editShare(share)}>Edit</Button>
+              <Button
+                size="sm"
+                variant="danger"
+                loading={busy === share.name}
+                disabled={!!busy && busy !== share.name}
+                on:click={() => deleteShare(share)}
+              >Delete</Button>
+            </div>
           </div>
-          <div class="flex gap-2">
-            <button class="btn btn-secondary" on:click={() => editShare(share)}>Edit</button>
-            <button class="btn btn-danger" on:click={() => deleteShare(share.name)}>Delete</button>
-          </div>
-        </div>
-      {/each}
-    </div>
-  {/if}
+        {/each}
+      </div>
+    {/if}
+  </AsyncState>
 </div>
 
 {#if showForm}
-  <ShareForm share={editingShare} on:close={() => { showForm = false; loadShares(); }} />
+  <ShareForm
+    share={editingShare}
+    on:close={() => {
+      showForm = false;
+      loadShares();
+    }}
+  />
 {/if}

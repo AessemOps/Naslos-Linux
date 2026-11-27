@@ -11,7 +11,6 @@ test('groups page loads and can open new group form', async ({ page }) => {
 
 test('can create a group with empty description', async ({ page }) => {
   const cn = 'testgroup' + unique();
-  page.on('dialog', dialog => dialog.accept());
 
   await page.goto('/groups');
   await page.getByRole('button', { name: '+ New Group' }).click();
@@ -19,7 +18,8 @@ test('can create a group with empty description', async ({ page }) => {
   // Leave description empty
   await page.getByRole('button', { name: 'Create', exact: true }).click();
   await expect(page.locator('div.card', { hasText: cn })).toBeVisible();
-  // Clean up
+  // Clean up: deleting asks for confirmation in the app's own dialog.
   await page.locator('div.card', { hasText: cn }).getByRole('button', { name: 'Delete' }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Delete', exact: true }).click();
   await expect(page.locator('div.card', { hasText: cn })).not.toBeVisible();
 });
