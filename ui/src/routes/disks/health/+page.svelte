@@ -1,7 +1,13 @@
 <script lang="ts">
   import { onDestroy, onMount } from 'svelte';
-  import LoadingState from '$lib/components/LoadingState.svelte';
-  import { formatBytes } from '$lib/format';
+  import AsyncState from '$lib/components/AsyncState.svelte';
+  import Button from '$lib/components/Button.svelte';
+  import DataTable from '$lib/components/DataTable.svelte';
+  import PageHeader from '$lib/components/PageHeader.svelte';
+  import StatusBadge from '$lib/components/StatusBadge.svelte';
+  import { formatBytes, fmtTime } from '$lib/format';
+  import { parseJsonSafe } from '$lib/storage';
+  import type { Tone } from '$lib/status';
 
   interface SmartInfo {
     available: boolean;
@@ -50,8 +56,6 @@
     disks: DiskHealthEntry[];
   }
 
-  type Tone = 'ok' | 'warn' | 'bad' | 'unknown';
-
   let data: DiskHealthResponse | null = null;
   let loading = true;
   let refreshing = false;
@@ -59,31 +63,13 @@
   let lastUpdated = '';
   let timer: ReturnType<typeof setInterval> | undefined;
 
-  async function parseJsonSafe(res: Response, what: string) {
-    const text = await res.text();
-    if (!res.ok) {
-      throw new Error(`${what} failed: HTTP ${res.status} — ${text.slice(0, 200)}`);
-    }
-    const contentType = res.headers.get('content-type') || '';
-    if (!contentType.includes('application/json')) {
-      throw new Error(
-        `${what} failed: expected JSON but got "${contentType || 'unknown content type'}" — ${text.slice(0, 200)}`
-      );
-    }
-    try {
-      return JSON.parse(text);
-    } catch {
-      throw new Error(`${what} failed: invalid JSON response — ${text.slice(0, 200)}`);
-    }
-  }
-
   async function load() {
     refreshing = true;
     error = '';
     try {
       const res = await fetch('/api/disks/health');
-      data = await parseJsonSafe(res, 'Loading disk health');
-      lastUpdated = new Date().toLocaleTimeString();
+      data = await parseJsonSafe<DiskHealthResponse>(res, 'Loading disk health');
+      lastUpdated = fmtTime(new Date());
     } catch (e: any) {
       error = e?.message || String(e);
     } finally {
@@ -104,6 +90,9 @@
     return (disk.zfs?.state || '').toUpperCase();
   }
 
+  // One tone per disk from its SMART health, ZFS vdev state, and the warning
+  // thresholds the API returned. Badges render the computed tone through the
+  // shared StatusBadge so there is no per-page colour table.
   function tone(disk: DiskHealthEntry): Tone {
     const health = (disk.smart.health || '').toUpperCase();
     const zfs = stateUpper(disk);
@@ -126,7 +115,7 @@
       return 'warn';
     }
     if (!disk.smart.available || health === 'UNKNOWN' || health === '') {
-      return 'unknown';
+      return 'neutral';
     }
     return 'ok';
   }
@@ -137,23 +126,10 @@
         return 0;
       case 'warn':
         return 1;
-      case 'unknown':
+      case 'neutral':
         return 2;
       default:
         return 3;
-    }
-  }
-
-  function toneBadge(t: Tone): string {
-    switch (t) {
-      case 'bad':
-        return 'badge-bad';
-      case 'warn':
-        return 'badge-warn';
-      case 'ok':
-        return 'badge-ok';
-      default:
-        return 'badge-neutral';
     }
   }
 
@@ -180,149 +156,135 @@
   $: healthy = disks.filter((d) => tone(d) === 'ok').length;
   $: warning = disks.filter((d) => tone(d) === 'warn').length;
   $: failed = disks.filter((d) => tone(d) === 'bad').length;
-  $: unknown = disks.filter((d) => tone(d) === 'unknown').length;
+  $: neutral = disks.filter((d) => tone(d) === 'neutral').length;
 </script>
 
-<div class="max-w-7xl mx-auto">
-  <div class="flex flex-wrap items-start justify-between gap-4 mb-6">
-    <div>
-      <h1 class="text-3xl font-bold mb-2">Disk Health</h1>
-      <p class="text-gray-400">
-        SMART health and ZFS vdev state for every whole disk. Read-only: sleeping disks are not woken.
-      </p>
-    </div>
-    <div class="flex items-center gap-3">
+<div class="mx-auto max-w-7xl">
+  <PageHeader
+    title="Disk Health"
+    subtitle="SMART health and ZFS vdev state for every whole disk. Read-only: sleeping disks are not woken."
+    breadcrumbs={[{ label: 'Storage' }, { label: 'Disks', href: '/disks' }, { label: 'Health' }]}
+  >
+    <div slot="actions" class="flex flex-wrap items-center gap-3">
       {#if lastUpdated}<span class="text-xs text-gray-500">Updated {lastUpdated}</span>{/if}
-      <button
-        type="button"
-        class="px-4 py-2 rounded-lg bg-naslos-primary hover:bg-naslos-accent text-white text-sm disabled:opacity-50"
-        on:click={load}
-        disabled={refreshing}
-      >
-        {refreshing ? 'Refreshing…' : 'Refresh'}
-      </button>
+      <Button variant="secondary" loading={refreshing} on:click={load}>Refresh</Button>
     </div>
-  </div>
-
-  {#if error}
-    <div class="mb-6 p-4 rounded-lg border border-red-800 bg-red-950/40 text-red-300">
-      {error}
-    </div>
-  {/if}
+  </PageHeader>
 
   {#if data && !data.smartctlAvailable}
-    <div class="mb-6 p-4 rounded-lg border border-amber-800 bg-amber-950/30 text-amber-200">
+    <div role="alert" class="callout callout-warn">
       <p class="font-medium">SMART is unavailable on this node.</p>
-      <p class="text-sm text-amber-300/80 mt-1">
+      <p class="mt-1 text-sm">
         {data.error || 'The agent could not read SMART data; ZFS state is still shown.'}
       </p>
     </div>
   {/if}
 
-  {#if loading}
-    <LoadingState label="Loading disk health…" />
-  {:else if disks.length === 0 && !error}
-    <div class="p-8 rounded-lg border border-naslos-border bg-naslos-surface text-center text-gray-400">
-      No whole disks were reported by the node.
-    </div>
-  {:else}
-    <div class="grid grid-cols-2 sm:grid-cols-5 gap-3 mb-6">
-      <div class="p-4 rounded-lg bg-naslos-surface border border-naslos-border">
+  <AsyncState
+    {loading}
+    error={error}
+    empty={disks.length === 0}
+    loadingText="Loading disk health…"
+    emptyTitle="No whole disks were reported by the node."
+    emptyDetail="Only whole disks are listed; partitions and virtual devices are not."
+    emptyIcon="hard-drive"
+    onRetry={load}
+  >
+    <div class="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-5">
+      <div class="rounded-lg border border-naslos-border bg-naslos-surface p-4">
         <p class="text-xs text-gray-500">Total</p>
         <p class="text-2xl font-semibold">{disks.length}</p>
       </div>
-      <div class="p-4 rounded-lg bg-naslos-surface border border-green-900/60">
-        <p class="text-xs text-gray-500">Healthy</p>
-        <p class="text-2xl font-semibold text-green-400">{healthy}</p>
+      <div class="rounded-lg border border-naslos-border bg-naslos-surface p-4">
+        <p class="mb-1 text-xs text-gray-500">Healthy</p>
+        <StatusBadge tone="ok" label={String(healthy)} />
       </div>
-      <div class="p-4 rounded-lg bg-naslos-surface border border-amber-900/60">
-        <p class="text-xs text-gray-500">Warning</p>
-        <p class="text-2xl font-semibold text-amber-300">{warning}</p>
+      <div class="rounded-lg border border-naslos-border bg-naslos-surface p-4">
+        <p class="mb-1 text-xs text-gray-500">Warning</p>
+        <StatusBadge tone="warn" label={String(warning)} />
       </div>
-      <div class="p-4 rounded-lg bg-naslos-surface border border-red-900/60">
-        <p class="text-xs text-gray-500">Failed</p>
-        <p class="text-2xl font-semibold text-red-400">{failed}</p>
+      <div class="rounded-lg border border-naslos-border bg-naslos-surface p-4">
+        <p class="mb-1 text-xs text-gray-500">Failed</p>
+        <StatusBadge tone="bad" label={String(failed)} />
       </div>
-      <div class="p-4 rounded-lg bg-naslos-surface border border-naslos-border">
-        <p class="text-xs text-gray-500">Unknown</p>
-        <p class="text-2xl font-semibold text-gray-400">{unknown}</p>
+      <div class="rounded-lg border border-naslos-border bg-naslos-surface p-4">
+        <p class="mb-1 text-xs text-gray-500">Unknown</p>
+        <StatusBadge tone="neutral" label={String(neutral)} />
       </div>
     </div>
 
-    <div class="overflow-x-auto rounded-lg border border-naslos-border">
-      <table class="min-w-full text-sm">
-        <thead class="bg-naslos-surface text-gray-400">
+    <DataTable>
+      <table>
+        <thead>
           <tr>
-            <th class="text-left font-medium px-3 py-2">Disk</th>
-            <th class="text-left font-medium px-3 py-2">Model / serial</th>
-            <th class="text-left font-medium px-3 py-2">Pool / vdev</th>
-            <th class="text-left font-medium px-3 py-2">ZFS</th>
-            <th class="text-left font-medium px-3 py-2">SMART</th>
-            <th class="text-right font-medium px-3 py-2">Temp</th>
-            <th class="text-right font-medium px-3 py-2">Hours</th>
-            <th class="text-right font-medium px-3 py-2">Wear</th>
-            <th class="text-right font-medium px-3 py-2">SMART errors (R/P/U)</th>
-            <th class="text-left font-medium px-3 py-2">Details</th>
+            <th scope="col">Disk</th>
+            <th scope="col">Model / serial</th>
+            <th scope="col">Pool / vdev</th>
+            <th scope="col">ZFS</th>
+            <th scope="col">SMART</th>
+            <th scope="col" class="text-right">Temp</th>
+            <th scope="col" class="text-right">Hours</th>
+            <th scope="col" class="text-right">Wear</th>
+            <th scope="col" class="text-right">SMART errors (R/P/U)</th>
+            <th scope="col">Details</th>
           </tr>
         </thead>
         <tbody>
           {#each sortedDisks as disk}
             {@const t = tone(disk)}
-            <tr class="border-t border-naslos-border/70 align-top">
-              <td class="px-3 py-3 whitespace-nowrap">
-                <span class="font-medium">{disk.device}</span>
+            <tr class="align-top">
+              <td class="whitespace-nowrap">
+                <span class="font-mono font-medium">{disk.device}</span>
                 {#if disk.isSystemDisk}
-                  <span class="ml-2 text-xs px-1.5 py-0.5 rounded bg-naslos-border text-gray-300">system</span>
+                  <span class="ml-2"><StatusBadge tone="neutral" label="system" /></span>
                 {/if}
-                <div class="text-xs text-gray-500">{disk.type || '—'} · {formatBytes(disk.size)}</div>
+                <div class="text-xs text-gray-500">
+                  {disk.type || '—'} · {formatBytes(disk.size)}
+                </div>
               </td>
-              <td class="px-3 py-3">
+              <td>
                 <div>{disk.model || 'Unknown model'}</div>
-                <div class="text-xs text-gray-500">{disk.serial || 'no serial'}</div>
+                <div class="font-mono text-xs text-gray-500">{disk.serial || 'no serial'}</div>
               </td>
-              <td class="px-3 py-3 whitespace-nowrap">
+              <td class="whitespace-nowrap">
                 {#if disk.zfs}
                   <a class="text-naslos-link hover:underline" href={`/pools/${disk.zfs.pool}`}>
                     {disk.zfs.pool}
                   </a>
-                  <div class="text-xs text-gray-500">{disk.zfs.vdev}</div>
+                  <div class="font-mono text-xs text-gray-500">{disk.zfs.vdev}</div>
                 {:else if disk.inPool}
                   {disk.inPool}
                 {:else}
                   <span class="text-gray-500">—</span>
                 {/if}
               </td>
-              <td class="px-3 py-3">
-                <span class={`badge ${toneBadge(t)}`}>
-                  {zfsLabel(disk)}
-                </span>
+              <td>
+                <StatusBadge tone={t} label={zfsLabel(disk)} />
                 {#if disk.zfs}
-                  <div class="text-xs text-gray-500 mt-1">
+                  <div class="mt-1 font-mono text-xs text-gray-500">
                     {disk.zfs.readErrors}/{disk.zfs.writeErrors}/{disk.zfs.cksumErrors}
                   </div>
                 {/if}
               </td>
-              <td class="px-3 py-3">
-                <span class={`badge ${toneBadge(t)}`}>
-                  {smartLabel(disk)}
-                </span>
+              <td>
+                <StatusBadge tone={t} label={smartLabel(disk)} />
                 {#if disk.smart.enabled === false && disk.smart.available}
-                  <div class="text-xs text-gray-500 mt-1">SMART disabled</div>
+                  <div class="mt-1 text-xs text-gray-500">SMART disabled</div>
                 {/if}
               </td>
-              <td class="px-3 py-3 text-right">
+              <td class="text-right font-mono">
                 {disk.smart.temperatureC !== undefined ? `${disk.smart.temperatureC}°C` : '—'}
               </td>
-              <td class="px-3 py-3 text-right">{valueOrDash(disk.smart.powerOnHours)}</td>
-              <td class="px-3 py-3 text-right">
+              <td class="text-right font-mono">{valueOrDash(disk.smart.powerOnHours)}</td>
+              <td class="text-right font-mono">
                 {disk.smart.wearPercent !== undefined ? `${disk.smart.wearPercent}%` : '—'}
               </td>
-              <td class="px-3 py-3 text-right whitespace-nowrap">
+              <td class="whitespace-nowrap text-right font-mono">
                 {valueOrDash(disk.smart.reallocatedSectors)} /
                 {valueOrDash(disk.smart.pendingSectors)} /
                 {valueOrDash(disk.smart.uncorrectableSectors)}
               </td>
-              <td class="px-3 py-3 text-xs text-gray-400 max-w-xs">
+              <td class="max-w-xs text-xs text-gray-400">
                 {#if disk.smart.message}
                   <p>{disk.smart.message}</p>
                 {/if}
@@ -340,19 +302,19 @@
           {/each}
         </tbody>
       </table>
-    </div>
+    </DataTable>
 
-    {#if unknown > 0}
-      <p class="text-xs text-gray-500 mt-3">
-        {unknown} disk{unknown === 1 ? '' : 's'} have no usable SMART data (virtio, USB bridges and
-        some RAID controllers do not expose it).
+    {#if neutral > 0}
+      <p role="status" class="mt-3 text-xs text-gray-500">
+        {neutral} disk{neutral === 1 ? '' : 's'} {neutral === 1 ? 'has' : 'have'} no usable SMART
+        data (virtio, USB bridges and some RAID controllers do not expose it).
       </p>
     {/if}
     {#if failed > 0}
-      <p class="text-xs text-red-400 mt-3">
+      <p role="alert" class="mt-3 text-xs text-red-300">
         A failed disk should be replaced and the pool resilvered. Do not run a destructive test on a
         disk that holds data.
       </p>
     {/if}
-  {/if}
+  </AsyncState>
 </div>

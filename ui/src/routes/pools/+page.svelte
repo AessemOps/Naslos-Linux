@@ -1,8 +1,10 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { api, ApiError } from '$lib/api';
+  import AsyncState from '$lib/components/AsyncState.svelte';
+  import Button from '$lib/components/Button.svelte';
+  import EmptyState from '$lib/components/EmptyState.svelte';
   import Icon from '$lib/components/Icon.svelte';
-  import ErrorState from '$lib/components/ErrorState.svelte';
-  import LoadingState from '$lib/components/LoadingState.svelte';
   import Modal from '$lib/components/Modal.svelte';
   import PageHeader from '$lib/components/PageHeader.svelte';
   import StatusBadge from '$lib/components/StatusBadge.svelte';
@@ -37,56 +39,51 @@
     loading = true;
     error = '';
     try {
-      const res = await fetch('/api/volumes/zfs');
-      if (res.ok) {
-        pools = await res.json();
-      } else {
-        error = `Failed to load pools (HTTP ${res.status})`;
-      }
+      pools = await api<Pool[]>('/api/volumes/zfs');
     } catch (e) {
-      error = 'Failed to connect to API';
+      error =
+        e instanceof ApiError
+          ? `Failed to load pools (HTTP ${e.status})`
+          : 'Failed to connect to the API';
     } finally {
       loading = false;
     }
   }
 
-  async function openImportModal() {
-    showImportModal = true;
+  async function loadImportable() {
     importLoading = true;
     importError = '';
     importablePools = [];
     try {
-      const res = await fetch('/api/volumes/zfs/import');
-      if (res.ok) {
-        importablePools = await res.json();
-      } else {
-        importError = `Failed to list importable pools (HTTP ${res.status})`;
-      }
+      importablePools = await api<ImportablePool[]>('/api/volumes/zfs/import');
     } catch (e) {
-      importError = 'Failed to connect to API';
+      importError =
+        e instanceof ApiError
+          ? `Failed to list importable pools (HTTP ${e.status})`
+          : 'Failed to connect to the API';
     } finally {
       importLoading = false;
     }
+  }
+
+  function openImportModal() {
+    showImportModal = true;
+    void loadImportable();
   }
 
   async function importPool(name: string) {
     importingName = name;
     importError = '';
     try {
-      const res = await fetch('/api/volumes/zfs/import', {
+      await api('/api/volumes/zfs/import', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name })
       });
-      if (res.ok) {
-        showImportModal = false;
-        loadPools();
-      } else {
-        const text = await res.text();
-        importError = `Import failed: ${text.slice(0, 200)}`;
-      }
+      showImportModal = false;
+      await loadPools();
     } catch (e) {
-      importError = 'Failed to connect to API';
+      importError = e instanceof ApiError ? `Import failed: ${e.message}` : 'Failed to connect to the API';
     } finally {
       importingName = '';
     }
@@ -94,107 +91,125 @@
 
   function topologyLabel(t: string): string {
     switch (t) {
-      case 'mirror': return 'Mirror';
-      case 'raidz1': return 'RAIDZ1';
-      case 'raidz2': return 'RAIDZ2';
-      case 'raidz3': return 'RAIDZ3';
-      case 'single': return 'Single';
-      default: return t || 'Unknown';
+      case 'mirror':
+        return 'Mirror';
+      case 'raidz1':
+        return 'RAIDZ1';
+      case 'raidz2':
+        return 'RAIDZ2';
+      case 'raidz3':
+        return 'RAIDZ3';
+      case 'single':
+        return 'Single';
+      default:
+        return t || 'Unknown';
     }
   }
 
   onMount(loadPools);
 </script>
 
-<div>
+<div class="mx-auto max-w-6xl">
   <PageHeader title="ZFS Pools" subtitle="Monitor and manage your ZFS pools.">
-    <button slot="actions" class="btn btn-secondary" on:click={openImportModal}>
-      Import Pool
-    </button>
+    <div slot="actions">
+      <Button variant="secondary" on:click={openImportModal}>Import Pool</Button>
+    </div>
   </PageHeader>
 
-  {#if loading}
-    <LoadingState label="Loading pools..." />
-  {:else if error}
-    <ErrorState message={error} retry={loadPools} />
-  {:else if pools.length === 0}
-    <div class="card text-center py-12">
-      <p class="text-gray-400 mb-4">No ZFS pools configured yet.</p>
-      <div class="flex justify-center gap-3">
-        <button class="btn btn-secondary" on:click={openImportModal}>Import Existing Pool</button>
-        <a href="/disks" class="btn btn-primary">Create New Pool</a>
-      </div>
-    </div>
-  {:else}
-    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-      {#each pools as pool}
-        <a href="/pools/{pool.name}" class="card hover:border-naslos-accent transition-colors">
-          <div class="flex items-center justify-between mb-3">
-            <span class="font-bold text-lg">{pool.name}</span>
-            <StatusBadge state={pool.health} unknownTone="bad" />
-          </div>
-          <div class="text-sm text-gray-400 mb-2">
-            {pool.size} total · {pool.free} free
-          </div>
-          {#if pool.disks && pool.disks.length > 0}
-            <div class="text-xs text-gray-500">
-              {pool.disks.length} disk{pool.disks.length > 1 ? 's' : ''}: {pool.disks.join(', ')}
+  <AsyncState
+    {loading}
+    error={error}
+    loadingText="Loading pools..."
+    onRetry={loadPools}
+  >
+    {#if pools.length === 0}
+      <EmptyState
+        icon="database"
+        title="No ZFS pools configured yet."
+        detail="Create a pool from the disks connected to this node, or import a pool that already exists on a disk."
+      >
+        <svelte:fragment slot="action">
+          <Button variant="secondary" on:click={openImportModal}>Import Existing Pool</Button>
+          <Button href="/disks">Create New Pool</Button>
+        </svelte:fragment>
+      </EmptyState>
+    {:else}
+      <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+        {#each pools as pool}
+          <a href="/pools/{pool.name}" class="card transition-colors hover:border-naslos-accent">
+            <div class="mb-3 flex items-center justify-between gap-2">
+              <span class="text-lg font-bold">{pool.name}</span>
+              <StatusBadge state={pool.health} unknownTone="bad" />
             </div>
-          {/if}
-          <div class="mt-3 text-xs text-naslos-link flex items-center gap-1">
-            View health details
-            <Icon name="chevron-right" size={14} />
-          </div>
-        </a>
-      {/each}
-    </div>
-  {/if}
+            <div class="mb-2 text-sm text-gray-400">
+              <span class="font-mono">{pool.size}</span> total ·
+              <span class="font-mono">{pool.free}</span> free
+            </div>
+            {#if pool.disks && pool.disks.length > 0}
+              <div class="text-xs text-gray-500">
+                {pool.disks.length} disk{pool.disks.length > 1 ? 's' : ''}: {pool.disks.join(', ')}
+              </div>
+            {/if}
+            <div class="mt-3 flex items-center gap-1 text-xs text-naslos-link">
+              View health details
+              <Icon name="chevron-right" size={14} />
+            </div>
+          </a>
+        {/each}
+      </div>
+    {/if}
+  </AsyncState>
 </div>
 
-<!-- Import Modal -->
 {#if showImportModal}
-  <Modal title="Import Existing Pool" onClose={() => (showImportModal = false)}>
-    <p class="text-gray-400 text-sm">Pools below were found on connected disks but are not currently imported.</p>
+  <Modal
+    title="Import Existing Pool"
+    size="lg"
+    onClose={() => {
+      showImportModal = false;
+      importingName = '';
+    }}
+  >
+    <p class="text-sm text-gray-400">
+      Pools below were found on connected disks but are not currently imported.
+    </p>
 
-    {#if importLoading}
-      <LoadingState label="Scanning for importable pools..." />
-    {:else if importError}
-      <p role="alert" class="text-red-400">{importError}</p>
-    {:else if importablePools.length === 0}
-      <div class="text-center py-8">
-        <p class="text-gray-400">No importable pools found.</p>
-        <p class="text-gray-500 text-sm mt-2">Pools that are already imported do not appear here.</p>
-      </div>
-    {:else}
+    <AsyncState
+      loading={importLoading}
+      error={importError}
+      empty={importablePools.length === 0}
+      loadingText="Scanning for importable pools..."
+      emptyTitle="No importable pools found."
+      emptyDetail="Pools that are already imported do not appear here."
+      emptyIcon="database"
+      onRetry={loadImportable}
+    >
       <div class="space-y-3">
         {#each importablePools as ip}
-          <div class="border border-naslos-border rounded-lg p-4">
-            <div class="flex items-center justify-between mb-2">
+          <div class="rounded-lg border border-naslos-border p-4">
+            <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
               <span class="font-bold">{ip.name}</span>
-              <button
-                class="btn btn-primary btn-sm"
+              <Button
+                size="sm"
+                loading={importingName === ip.name}
                 disabled={importingName !== ''}
                 on:click={() => importPool(ip.name)}
               >
-                {#if importingName === ip.name}
-                  Importing…
-                {:else}
-                  Import
-                {/if}
-              </button>
+                Import
+              </Button>
             </div>
-            <div class="text-sm text-gray-400 flex items-center gap-2">
+            <div class="flex flex-wrap items-center gap-2 text-sm text-gray-400">
               <span class="badge badge-neutral">{topologyLabel(ip.topology)}</span>
               <span>{ip.state}</span>
             </div>
             {#if ip.disks.length > 0}
-              <div class="text-xs text-gray-500 mt-2">
+              <div class="mt-2 text-xs text-gray-500">
                 {ip.disks.length} disk{ip.disks.length > 1 ? 's' : ''}: {ip.disks.join(', ')}
               </div>
             {/if}
           </div>
         {/each}
       </div>
-    {/if}
+    </AsyncState>
   </Modal>
 {/if}

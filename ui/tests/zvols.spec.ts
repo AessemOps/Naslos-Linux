@@ -70,13 +70,19 @@ test('a zvol can be created, resized and destroyed from the pool page', async ({
     page.on('request', (req) => {
       if (req.method() === 'DELETE' && req.url().includes('/api/zvols')) deletes.push(req.url());
     });
-    page.once('dialog', (d) => d.dismiss());
+    const confirmDialog = page.locator('.fixed.inset-0');
     await row.getByRole('button', { name: 'Delete' }).click();
+    await expect(
+      confirmDialog.getByRole('heading', { name: `Destroy zvol ${full}?` })
+    ).toBeVisible();
+    await confirmDialog.getByRole('button', { name: 'Cancel' }).click();
+    await expect(confirmDialog).toBeHidden();
     await expect(row).toBeVisible();
     expect(deletes).toHaveLength(0);
 
-    page.once('dialog', (d) => d.accept(full));
     await row.getByRole('button', { name: 'Delete' }).click();
+    await confirmDialog.getByLabel(`Type ${full} to confirm`).fill(full);
+    await confirmDialog.getByRole('button', { name: 'Destroy zvol' }).click();
     await expect
       .poll(() => deletes.some((url) => url.includes(`confirm=${encodeURIComponent(full)}`)))
       .toBe(true);

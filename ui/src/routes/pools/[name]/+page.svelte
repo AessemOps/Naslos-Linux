@@ -1,45 +1,39 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { page } from '$app/state';
-  import Icon from '$lib/components/Icon.svelte';
+  import { api, ApiError } from '$lib/api';
+  import AddDriveModal from '$lib/components/pools/AddDriveModal.svelte';
+  import NewDatasetModal from '$lib/components/pools/NewDatasetModal.svelte';
+  import NewZvolModal from '$lib/components/pools/NewZvolModal.svelte';
+  import PoolDatasetsCard from '$lib/components/pools/PoolDatasetsCard.svelte';
+  import PoolHealthSummary from '$lib/components/pools/PoolHealthSummary.svelte';
+  import PoolSchedulesCard from '$lib/components/pools/PoolSchedulesCard.svelte';
+  import PoolZvolsCard from '$lib/components/pools/PoolZvolsCard.svelte';
+  import ResizeZvolModal from '$lib/components/pools/ResizeZvolModal.svelte';
+  import ScheduleModal from '$lib/components/pools/ScheduleModal.svelte';
+  import AsyncState from '$lib/components/AsyncState.svelte';
+  import Button from '$lib/components/Button.svelte';
   import ErrorState from '$lib/components/ErrorState.svelte';
-  import LoadingState from '$lib/components/LoadingState.svelte';
-  import Modal from '$lib/components/Modal.svelte';
   import PageHeader from '$lib/components/PageHeader.svelte';
-  import StatusBadge from '$lib/components/StatusBadge.svelte';
-  import { formatBytes } from '$lib/format';
-
-  interface PoolDevice {
-    name: string;
-    state: string;
-    read: string;
-    write: string;
-    cksum: string;
-    devices?: PoolDevice[];
-  }
-
-  interface PoolIOStats {
-    readOps: string;
-    writeOps: string;
-    readBW: string;
-    writeBW: string;
-  }
+  import { isEncryptedDataset } from '$lib/storage';
+  import { confirmAction } from '$lib/stores/confirm';
 
   interface PoolHealth {
     name: string;
     state: string;
     scan: string;
     errors: string;
-    config: PoolDevice[];
-    ioStats: PoolIOStats;
+    config: Array<{
+      name: string;
+      state: string;
+      read: string;
+      write: string;
+      cksum: string;
+      devices?: Array<{ name: string; state: string; read: string; write: string; cksum: string }>;
+    }>;
+    ioStats: { readOps: string; writeOps: string; readBW: string; writeBW: string };
   }
 
-  let health: PoolHealth | null = null;
-  let loading = true;
-  let error = '';
-
-  // Datasets in this pool: a dataset is what a share points at, so creating one
-  // here is usually the step right before creating a share.
   interface Dataset {
     name: string;
     used: string;
@@ -51,20 +45,7 @@
     keystatus?: string;
     encryptionRoot?: string;
   }
-  let datasets: Dataset[] = [];
-  let datasetsError = '';
 
-  let showDatasetModal = false;
-  let datasetName = '';
-  let datasetCompression = 'lz4';
-  let datasetQuota = '';
-  let datasetEncrypted = false;
-  let datasetSaving = false;
-  let datasetError = '';
-
-  // Block volumes (FR-ZVOL). A zvol is a raw block device, not a mounted
-  // dataset, so it is listed separately from the dataset table. There is no
-  // iSCSI export yet: a zvol is only usable by a local consumer.
   interface Zvol {
     name: string;
     volsize: string;
@@ -75,22 +56,7 @@
     avail: string;
     refer: string;
   }
-  let zvols: Zvol[] = [];
-  let zvolsError = '';
-  let showZvolModal = false;
-  let zvolName = '';
-  let zvolSize = '';
-  let zvolBlocksize = '';
-  let zvolCompression = 'lz4';
-  let zvolSaving = false;
-  let zvolError = '';
-  let resizeZvol: Zvol | null = null;
-  let resizeSize = '';
-  let resizeSaving = false;
-  let resizeError = '';
 
-  // Scheduled snapshots and scrubs (FR-STO-10/11). Schedules are stored by the
-  // API and survive restarts; this page only edits them.
   interface StorageSchedule {
     id: string;
     kind: 'snapshot' | 'scrub';
@@ -105,31 +71,33 @@
     lastError?: string;
     nextRun?: string;
   }
+
+  let health: PoolHealth | null = null;
+  let loading = true;
+  let error = '';
+
+  let datasets: Dataset[] = [];
+  let datasetsError = '';
+
+  let zvols: Zvol[] = [];
+  let zvolsError = '';
+
   let schedules: StorageSchedule[] = [];
   let schedulesError = '';
+
+  let actionError = '';
   let scrubRunning = false;
   let scrubMessage = '';
   let scrubError = false;
 
+  let showDatasetModal = false;
+  let showZvolModal = false;
+  let resizeZvol: Zvol | null = null;
   let showScheduleModal = false;
   let scheduleKind: 'snapshot' | 'scrub' = 'snapshot';
-  let scheduleId = '';
   let scheduleTarget = '';
-  let scheduleCadence: 'hourly' | 'daily' | 'weekly' = 'daily';
-  let scheduleRunAt = '02:30';
-  let scheduleKeep = 7;
-  let scheduleRecursive = false;
-  let scheduleSaving = false;
-  let scheduleError = '';
-
+  let scheduleExisting: StorageSchedule | null = null;
   let showAddDriveModal = false;
-  let disks: any[] = [];
-  let disksError = '';
-  let selectedDisks: string[] = [];
-  let addTopology = 'single';
-  let addForce = false;
-  let addSaving = false;
-  let addError = '';
 
   // SvelteKit reuses this component when the route param changes, so the
   // pool name must stay reactive; a captured `const` kept showing (and
@@ -138,8 +106,10 @@
   let loadedPool = '';
   let mounted = false;
 
-  // Reset everything that belongs to one pool before loading the next one, so
-  // a navigation never shows the previous pool's health/datasets/schedules.
+  function message(e: unknown, fallback: string): string {
+    return e instanceof ApiError ? e.message : fallback;
+  }
+
   function resetPoolView() {
     health = null;
     loading = true;
@@ -150,16 +120,14 @@
     zvolsError = '';
     schedules = [];
     schedulesError = '';
+    actionError = '';
+    scrubMessage = '';
+    scrubError = false;
     showDatasetModal = false;
     showZvolModal = false;
     resizeZvol = null;
     showScheduleModal = false;
     showAddDriveModal = false;
-    datasetError = '';
-    zvolError = '';
-    resizeError = '';
-    scheduleError = '';
-    addError = '';
   }
 
   async function loadHealth() {
@@ -167,15 +135,15 @@
     loading = true;
     error = '';
     try {
-      const res = await fetch(`/api/volumes/zfs/${encodeURIComponent(requested)}/health`);
+      const data = await api<PoolHealth>(`/api/volumes/zfs/${encodeURIComponent(requested)}/health`);
       if (poolName !== requested) return;
-      if (res.ok) {
-        health = await res.json();
-      } else {
-        error = `Failed to load health data (HTTP ${res.status})`;
-      }
+      health = data;
     } catch (e) {
-      if (poolName === requested) error = 'Failed to connect to API';
+      if (poolName !== requested) return;
+      error =
+        e instanceof ApiError
+          ? `Failed to load health data (HTTP ${e.status})`
+          : 'Failed to connect to the API';
     } finally {
       if (poolName === requested) loading = false;
     }
@@ -186,420 +154,208 @@
   async function loadDatasets() {
     const requested = poolName;
     try {
-      const res = await fetch('/api/datasets');
-      if (poolName !== requested) return;
-      if (!res.ok) {
-        datasetsError = `Failed to load datasets (HTTP ${res.status})`;
-        return;
-      }
-      const all: Dataset[] = await res.json();
+      const all = await api<Dataset[]>('/api/datasets');
       if (poolName !== requested) return;
       const prefix = `${requested}/`;
-      datasets = all.filter(d => d.name === requested || d.name.startsWith(prefix));
+      datasets = all.filter((d) => d.name === requested || d.name.startsWith(prefix));
       datasetsError = '';
     } catch (e) {
-      if (poolName === requested) datasetsError = 'Failed to connect to API';
-    }
-  }
-
-  async function createDataset() {
-    datasetSaving = true;
-    datasetError = '';
-    try {
-      const options: Record<string, string> = {};
-      if (datasetCompression) options.compression = datasetCompression;
-      if (datasetQuota.trim()) options.quota = datasetQuota.trim();
-      if (datasetEncrypted) {
-        // Raw-key custody (FR-ENC): the API generates the key into a Secret;
-        // the browser never handles it.
-        options.encryption = 'on';
-        options.keyformat = 'raw';
+      if (poolName === requested) {
+        datasetsError =
+          e instanceof ApiError
+            ? `Failed to load datasets (HTTP ${e.status})`
+            : 'Failed to connect to the API';
       }
-
-      const res = await fetch('/api/datasets', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pool: poolName, name: datasetName, options })
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || 'Could not create the dataset');
-
-      showDatasetModal = false;
-      datasetName = '';
-      datasetQuota = '';
-      datasetEncrypted = false;
-      await loadDatasets();
-    } catch (e: any) {
-      datasetError = e.message;
-    } finally {
-      datasetSaving = false;
     }
   }
-
-  function isEncryptedDataset(ds: Dataset): boolean {
-    return !!ds.encryption && ds.encryption !== 'off' && ds.encryption !== '-';
-  }
-
-  function isLockedDataset(ds: Dataset): boolean {
-    return isEncryptedDataset(ds) && ds.keystatus === 'unavailable';
-  }
-
-  async function unlockDataset(name: string) {
-    try {
-      const res = await fetch('/api/datasets/unlock', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name })
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || `Unlock failed (HTTP ${res.status})`);
-      await loadDatasets();
-    } catch (e: any) {
-      alert(e.message);
-    }
-  }
-
-  async function lockDataset(name: string) {
-    if (!confirm(`Lock ${name}?\n\nIts data stays on disk but is unreadable until an administrator unlocks it. Stop shares and apps using it first.`)) return;
-    try {
-      const res = await fetch('/api/datasets/lock', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name })
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || `Lock failed (HTTP ${res.status})`);
-      await loadDatasets();
-    } catch (e: any) {
-      alert(e.message);
-    }
-  }
-
-  async function deleteDataset(name: string, recursive = false, confirmed = false) {
-    const subtree = datasets.filter((d) => d.name === name || d.name.startsWith(`${name}/`));
-    const encrypted = subtree.some((d) => isEncryptedDataset(d));
-
-    // Every dataset destroy needs a typed acknowledgement, not just encrypted
-    // ones: the API treats `confirm` as the operator's authority to erase the
-    // dataset, and a plain dataset is just as unrecoverable. Never send
-    // `confirm` before this prompt succeeds.
-    if (!confirmed) {
-      const typed = prompt(
-        encrypted
-          ? `Destroy encrypted dataset ${name} and its key Secret?\n\nAll data and snapshots in this subtree become unrecoverable without a backup. Type the dataset name to confirm.`
-          : `Destroy dataset ${name}?\n\nThis permanently deletes the dataset; if it is not empty, its snapshots and child datasets are deleted too. Type the dataset name to confirm.`
-      );
-      if (typed === null) return;
-      if (typed.trim() !== name) {
-        alert('Dataset name did not match; nothing was destroyed.');
-        return;
-      }
-      confirmed = true;
-    }
-
-    try {
-      // `confirmed` is only true after the typed prompt above.
-      const url = `/api/datasets?name=${encodeURIComponent(name)}${recursive ? '&recursive=true' : ''}&confirm=${encodeURIComponent(name)}`;
-      const res = await fetch(url, { method: 'DELETE' });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        // A non-empty dataset needs the recursive flag. Ask rather than guess:
-        // recursive also destroys snapshots and child datasets. An encrypted
-        // subtree was already covered by the typed confirmation above.
-        if (!recursive && /not empty|has children|snapshot/i.test(data.error || '')) {
-          if (!encrypted) {
-            const extra = ' This also destroys its snapshots and child datasets.';
-            if (!confirm(`${name} is not empty.\n\nDestroy it recursively?${extra} This cannot be undone.`)) return;
-          }
-          await deleteDataset(name, true, confirmed);
-          return;
-        }
-        alert(data.error || `Could not destroy ${name}`);
-        return;
-      }
-      await loadDatasets();
-    } catch (e: any) {
-      alert(e.message);
-    }
-  }
-
-  // ---- Block volumes (FR-ZVOL) ------------------------------------------
 
   async function loadZvols() {
     const requested = poolName;
     try {
-      const res = await fetch(`/api/zvols?pool=${encodeURIComponent(requested)}`);
-      if (poolName !== requested) return;
-      if (!res.ok) {
-        zvolsError = `Failed to load zvols (HTTP ${res.status})`;
-        return;
-      }
-      const data = await res.json();
+      const data = await api<Zvol[]>(`/api/zvols?pool=${encodeURIComponent(requested)}`);
       if (poolName !== requested) return;
       zvols = Array.isArray(data) ? data : [];
       zvolsError = '';
-    } catch {
-      if (poolName === requested) zvolsError = 'Failed to connect to API';
+    } catch (e) {
+      if (poolName === requested) {
+        zvolsError =
+          e instanceof ApiError
+            ? `Failed to load zvols (HTTP ${e.status})`
+            : 'Failed to connect to the API';
+      }
     }
-  }
-
-  function openZvol() {
-    zvolName = '';
-    zvolSize = '';
-    zvolBlocksize = '';
-    zvolCompression = 'lz4';
-    zvolError = '';
-    showZvolModal = true;
-  }
-
-  async function createZvol() {
-    zvolSaving = true;
-    zvolError = '';
-    try {
-      const options: Record<string, string> = {};
-      // The zvol property surface is deliberately narrow (FR-ZVOL-02): only
-      // volblocksize and compression are accepted here.
-      if (zvolBlocksize) options.volblocksize = zvolBlocksize;
-      if (zvolCompression) options.compression = zvolCompression;
-
-      const res = await fetch('/api/zvols', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          pool: poolName,
-          name: zvolName.trim(),
-          size: zvolSize.trim(),
-          options
-        })
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || 'Could not create the zvol');
-
-      showZvolModal = false;
-      await loadZvols();
-    } catch (e: any) {
-      zvolError = e.message;
-    } finally {
-      zvolSaving = false;
-    }
-  }
-
-  function openResize(zvol: Zvol) {
-    resizeZvol = zvol;
-    // Prefill the exact size: the listing's `volsize` is rounded for display,
-    // so resubmitting it can be unparseable (1.2M) or a silent shrink (1.0M
-    // for 1048577 bytes). The API accepts a plain byte count or an exact unit.
-    resizeSize = zfsExactSize(zvol.volsizeBytes);
-    resizeError = '';
-  }
-
-  async function submitResize() {
-    if (!resizeZvol) return;
-    resizeSaving = true;
-    resizeError = '';
-    const name = resizeZvol.name;
-    try {
-      const res = await fetch(`/api/zvols?name=${encodeURIComponent(name)}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ size: resizeSize.trim() })
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || 'Could not resize the zvol');
-      resizeZvol = null;
-      await loadZvols();
-    } catch (e: any) {
-      resizeError = e.message;
-    } finally {
-      resizeSaving = false;
-    }
-  }
-
-  async function deleteZvol(zvol: Zvol) {
-    // The API requires `confirm` equal to the full name; the typed prompt is
-    // what authorizes this unrecoverable destroy.
-    const typed = prompt(
-      `Destroy zvol ${zvol.name}?\n\nThe block device and everything stored on it are destroyed. Type the full name to confirm.`
-    );
-    if (typed === null) return;
-    if (typed.trim() !== zvol.name) {
-      alert('Zvol name did not match; nothing was destroyed.');
-      return;
-    }
-    try {
-      const url = `/api/zvols?name=${encodeURIComponent(zvol.name)}&confirm=${encodeURIComponent(zvol.name)}`;
-      const res = await fetch(url, { method: 'DELETE' });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || `Could not destroy ${zvol.name}`);
-      await loadZvols();
-    } catch (e: any) {
-      alert(e.message);
-    }
-  }
-
-  function zvolBlocksizeLabel(value: string): string {
-    const bytes = Number(value);
-    return value && Number.isFinite(bytes) && bytes > 0 ? formatBytes(bytes) : '—';
-  }
-
-  // The zvol size parser takes `[0-9]+(\.[0-9]+)?[KMGTPE]?` (binary units) or a
-  // plain byte count. Render the exact byte size in the first unit that divides
-  // evenly, so the prefilled value never rounds into a shrink or an invalid
-  // size; anything else stays a plain byte count.
-  function zfsExactSize(bytes: number): string {
-    if (!Number.isFinite(bytes) || bytes <= 0) return '';
-    const units: Array<[number, string]> = [
-      [1024 ** 4, 'T'],
-      [1024 ** 3, 'G'],
-      [1024 ** 2, 'M'],
-      [1024, 'K']
-    ];
-    for (const [unit, suffix] of units) {
-      if (bytes < unit) continue;
-      const value = bytes / unit;
-      const text = Number.isInteger(value)
-        ? String(value)
-        : value.toFixed(2).replace(/\.?0+$/, '');
-      if (Number(text) * unit === bytes) return `${text}${suffix}`;
-    }
-    return String(bytes);
-  }
-
-  // ---- Scheduled snapshots and scrubs -----------------------------------
-
-  function fmtTime(s?: string): string {
-    if (!s) return '—';
-    const d = new Date(s);
-    return isNaN(d.getTime()) ? s : d.toLocaleString();
   }
 
   async function loadSchedules() {
     try {
-      const res = await fetch('/api/storage/schedules');
-      if (!res.ok) {
-        schedulesError = `Failed to load schedules (HTTP ${res.status})`;
-        return;
-      }
-      const data = await res.json();
+      const data = await api<{ schedules?: StorageSchedule[] }>('/api/storage/schedules');
       schedules = Array.isArray(data.schedules) ? data.schedules : [];
       schedulesError = '';
-    } catch {
-      schedulesError = 'Failed to connect to API';
+    } catch (e) {
+      schedulesError =
+        e instanceof ApiError
+          ? `Failed to load schedules (HTTP ${e.status})`
+          : 'Failed to connect to the API';
     }
   }
 
-  $: snapshotSchedules = schedules.filter(
-    (s) => s.kind === 'snapshot' && (s.target === poolName || s.target?.startsWith(`${poolName}/`))
-  );
-  $: scrubSchedule = schedules.find((s) => s.kind === 'scrub' && s.target === poolName);
-  // A snapshot schedule needs a dataset below the pool; the pool root is the
-  // pool itself, not a snapshot target.
   $: scheduleableDatasets = datasets.filter((d) => d.name !== poolName);
 
-  function snapshotScheduleFor(dataset: string): StorageSchedule | undefined {
-    return schedules.find((s) => s.kind === 'snapshot' && s.target === dataset);
+  // ---- Dataset actions ---------------------------------------------------
+
+  async function unlockDataset(name: string) {
+    actionError = '';
+    try {
+      await api('/api/datasets/unlock', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name })
+      });
+      await loadDatasets();
+    } catch (e) {
+      actionError = message(e, 'Unlock failed. Check the API connection.');
+    }
   }
+
+  async function lockDataset(name: string) {
+    if (
+      !(await confirmAction({
+        title: 'Lock dataset',
+        message: `Lock ${name}?\n\nIts data stays on disk but is unreadable until an administrator unlocks it. Stop shares and apps using it first.`,
+        confirmLabel: 'Lock dataset'
+      }))
+    ) {
+      return;
+    }
+    actionError = '';
+    try {
+      await api('/api/datasets/lock', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name })
+      });
+      await loadDatasets();
+    } catch (e) {
+      actionError = message(e, 'Lock failed. Check the API connection.');
+    }
+  }
+
+  function datasetIsEncrypted(name: string): boolean {
+    return datasets
+      .filter((d) => d.name === name || d.name.startsWith(`${name}/`))
+      .some((d) => isEncryptedDataset(d));
+  }
+
+  async function deleteDataset(name: string) {
+    const encrypted = datasetIsEncrypted(name);
+    const confirmed = await confirmAction({
+      title: `Destroy dataset ${name}?`,
+      message: encrypted
+        ? `Destroy encrypted dataset ${name} and its key Secret?\n\nAll data and snapshots in this subtree become unrecoverable without a backup. Type the dataset name to confirm.`
+        : `Destroy dataset ${name}?\n\nThis permanently deletes the dataset; if it is not empty, its snapshots and child datasets are deleted too. Type the dataset name to confirm.`,
+      confirmLabel: 'Destroy dataset',
+      tone: 'danger',
+      typedConfirmation: name
+    });
+    if (!confirmed) return;
+    await destroyDataset(name, false, encrypted);
+  }
+
+  async function destroyDataset(name: string, recursive: boolean, encrypted: boolean) {
+    actionError = '';
+    try {
+      const url = `/api/datasets?name=${encodeURIComponent(name)}${recursive ? '&recursive=true' : ''}&confirm=${encodeURIComponent(name)}`;
+      await api(url, { method: 'DELETE' });
+      await loadDatasets();
+    } catch (e) {
+      const detail = message(e, 'Could not destroy the dataset.');
+      // A non-empty dataset needs the recursive flag. Ask rather than guess:
+      // recursive also destroys snapshots and child datasets. An encrypted
+      // subtree was already covered by the typed confirmation.
+      if (!recursive && /not empty|has children|snapshot/i.test(detail)) {
+        if (!encrypted) {
+          const go = await confirmAction({
+            title: 'Destroy recursively?',
+            message: `${name} is not empty.\n\nDestroy it recursively? This also destroys its snapshots and child datasets and cannot be undone.`,
+            confirmLabel: 'Destroy recursively',
+            tone: 'danger'
+          });
+          if (!go) return;
+        }
+        await destroyDataset(name, true, encrypted);
+        return;
+      }
+      actionError = detail;
+    }
+  }
+
+  // ---- Block volumes -----------------------------------------------------
+
+  async function deleteZvol(zvol: Zvol) {
+    const confirmed = await confirmAction({
+      title: `Destroy zvol ${zvol.name}?`,
+      message: `The block device and everything stored on it are destroyed. Type the full name to confirm.`,
+      confirmLabel: 'Destroy zvol',
+      tone: 'danger',
+      typedConfirmation: zvol.name
+    });
+    if (!confirmed) return;
+    actionError = '';
+    try {
+      await api(
+        `/api/zvols?name=${encodeURIComponent(zvol.name)}&confirm=${encodeURIComponent(zvol.name)}`,
+        { method: 'DELETE' }
+      );
+      await loadZvols();
+    } catch (e) {
+      actionError = message(e, 'Could not destroy the zvol.');
+    }
+  }
+
+  // ---- Schedules ---------------------------------------------------------
 
   function openSchedule(
     kind: 'snapshot' | 'scrub',
     target: string,
-    existing?: StorageSchedule
+    existing?: StorageSchedule | null
   ) {
     // Both entry points resolve the same way: opening an existing schedule must
     // edit it instead of silently creating a duplicate for the same target.
-    const current = existing ?? (kind === 'snapshot' ? snapshotScheduleFor(target) : scrubSchedule);
+    const current =
+      existing ??
+      (kind === 'snapshot'
+        ? schedules.find((s) => s.kind === 'snapshot' && s.target === target)
+        : schedules.find((s) => s.kind === 'scrub' && s.target === target)) ??
+      null;
     scheduleKind = kind;
-    scheduleId = current?.id ?? '';
     scheduleTarget = target;
-    scheduleCadence = current?.cadence ?? (kind === 'scrub' ? 'weekly' : 'daily');
-    scheduleRunAt = current?.runAt || (kind === 'scrub' ? 'Sun 02:30' : '02:30');
-    scheduleKeep = current?.keep ?? (kind === 'scrub' ? 0 : 7);
-    scheduleRecursive = current?.recursive ?? false;
-    scheduleError = '';
+    scheduleExisting = current;
     showScheduleModal = true;
   }
 
-  function selectScheduleTarget() {
-    const existing = snapshotScheduleFor(scheduleTarget);
-    scheduleId = existing?.id ?? '';
-    if (existing) {
-      scheduleCadence = existing.cadence;
-      scheduleRunAt = existing.runAt;
-      scheduleKeep = existing.keep;
-      scheduleRecursive = existing.recursive;
-    }
-  }
-
-  // Keep `runAt` valid for the selected cadence: daily is `HH:MM` and weekly is
-  // `Day HH:MM`. Changing the cadence must not leave the field in the other
-  // shape, or the API rejects the save until the operator retypes it.
-  function normalizeRunAt(
-    cadence: 'hourly' | 'daily' | 'weekly',
-    runAt: string
-  ): string {
-    if (cadence === 'hourly') return '';
-    const parts = runAt.trim().split(/\s+/).filter(Boolean);
-    const last = parts[parts.length - 1] ?? '';
-    const time = /^\d{2}:\d{2}$/.test(last) ? last : '02:30';
-    if (cadence === 'weekly') {
-      const day = parts.find(p => /^(sun|mon|tue|wed|thu|fri|sat)$/i.test(p));
-      const weekday = day ? day[0].toUpperCase() + day.slice(1, 3).toLowerCase() : 'Sun';
-      return `${weekday} ${time}`;
-    }
-    return time;
-  }
-
-  function changeScheduleCadence(event: Event) {
-    const value = (event.currentTarget as HTMLSelectElement).value as
-      | 'hourly'
-      | 'daily'
-      | 'weekly';
-    scheduleCadence = value;
-    scheduleRunAt = normalizeRunAt(value, scheduleRunAt);
-  }
-
-  async function saveSchedule() {
-    scheduleSaving = true;
-    scheduleError = '';
-    try {
-      const res = await fetch('/api/storage/schedules', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          id: scheduleId,
-          kind: scheduleKind,
-          target: scheduleTarget,
-          cadence: scheduleCadence,
-          runAt: scheduleCadence === 'hourly' ? '' : scheduleRunAt,
-          keep: scheduleKind === 'scrub' ? 0 : Number(scheduleKeep) || 0,
-          recursive: scheduleKind === 'snapshot' ? scheduleRecursive : false
-          // `enabled` is omitted: a new schedule defaults to enabled in the API,
-          // while editing a schedule disabled by the 0.6.0 duplicate migration
-          // must not silently re-enable it.
-        })
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || 'Could not save the schedule');
-      showScheduleModal = false;
-      await loadSchedules();
-    } catch (e: any) {
-      scheduleError = e.message;
-    } finally {
-      scheduleSaving = false;
-    }
+  function openScheduleForDataset(name: string) {
+    const existing = schedules.find((s) => s.kind === 'snapshot' && s.target === name) ?? null;
+    openSchedule('snapshot', name, existing);
   }
 
   async function removeSchedule(id: string) {
-    if (!confirm('Delete this schedule? Snapshots it already created are kept unless their retention limit is reached while the schedule still exists.')) return;
+    if (
+      !(await confirmAction({
+        title: 'Delete schedule',
+        message:
+          'Delete this schedule? Snapshots it already created are kept unless their retention limit is reached while the schedule still exists.',
+        confirmLabel: 'Delete schedule',
+        tone: 'danger'
+      }))
+    ) {
+      return;
+    }
+    actionError = '';
     try {
-      const res = await fetch(`/api/storage/schedules?id=${encodeURIComponent(id)}`, {
-        method: 'DELETE'
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || 'Could not delete the schedule');
+      await api(`/api/storage/schedules?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
       await loadSchedules();
-    } catch (e: any) {
-      alert(e.message);
+    } catch (e) {
+      actionError = message(e, 'Could not delete the schedule.');
     }
   }
 
@@ -608,115 +364,16 @@
     scrubMessage = '';
     scrubError = false;
     try {
-      const res = await fetch(`/api/volumes/zfs/${encodeURIComponent(poolName ?? '')}/scrub`, {
+      await api(`/api/volumes/zfs/${encodeURIComponent(poolName ?? '')}/scrub`, {
         method: 'POST'
       });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || 'Could not start the scrub');
       scrubMessage = 'Scrub started. Its result appears in the scan status above.';
       await loadHealth();
-    } catch (e: any) {
-      scrubMessage = e.message;
+    } catch (e) {
+      scrubMessage = message(e, 'Could not start the scrub.');
       scrubError = true;
     } finally {
       scrubRunning = false;
-    }
-  }
-
-  async function openAddDrive() {
-    showAddDriveModal = true;
-    disksError = '';
-    selectedDisks = [];
-    // The force acknowledgement is per selection: a previous modal's tick must
-    // never authorize wiping disks chosen in a later one.
-    addForce = false;
-    addError = '';
-    try {
-      const res = await fetch('/api/disks');
-      if (!res.ok) {
-        disksError = `Failed to list disks (HTTP ${res.status})`;
-        return;
-      }
-      disks = await res.json();
-    } catch (e) {
-      disksError = 'Failed to connect to API';
-    }
-  }
-
-  function diskSignatures(device: string): string[] {
-    const disk = disks.find(d => d.device === device);
-    return (disk && Array.isArray(disk.signatures)) ? disk.signatures : [];
-  }
-
-  function isZfsMember(device: string): boolean {
-    const sigs = diskSignatures(device);
-    return sigs.includes('zfs') || sigs.includes('zfs_member');
-  }
-
-  // A disk with data needs the explicit "Force" acknowledgement before the API
-  // accepts it; a ZFS label is refused outright.
-  function needsWipeConfirm(): boolean {
-    return selectedDisks.some(d => diskSignatures(d).length > 0 && !isZfsMember(d));
-  }
-
-  function toggleDisk(device: string) {
-    selectedDisks = selectedDisks.includes(device)
-      ? selectedDisks.filter(d => d !== device)
-      : [...selectedDisks, device];
-    // A changed selection invalidates the previous explicit confirmation.
-    addForce = false;
-  }
-
-  // What each topology costs: this is shown before the button is pressed, not
-  // discovered afterwards, because `zpool add` cannot be undone in general.
-  const topologyDisksNeeded: Record<string, number> = {
-    single: 1, stripe: 1, mirror: 2, raidz1: 2, raidz2: 3, raidz3: 4
-  };
-
-  function topologyHint(): string {
-    switch (addTopology) {
-      case 'mirror': return 'Mirror: every selected disk holds a copy. Survives one disk failing.';
-      case 'raidz1': return 'RAIDZ1: one disk of parity. Survives one disk failing.';
-      case 'raidz2': return 'RAIDZ2: two disks of parity. Survives two disks failing.';
-      case 'raidz3': return 'RAIDZ3: three disks of parity. Survives three disks failing.';
-      default: return 'Stripe: capacity only — NO redundancy. If any disk in this vdev fails, the whole pool is lost.';
-    }
-  }
-
-  async function addDevices() {
-    addSaving = true;
-    addError = '';
-    try {
-      const res = await fetch(`/api/volumes/zfs/${encodeURIComponent(poolName ?? '')}/devices`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          disks: selectedDisks,
-          topology: addTopology,
-          force: addForce,
-          wipeConfirmed: addForce ? selectedDisks : []
-        })
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || 'Could not add the disks');
-
-      showAddDriveModal = false;
-      await Promise.all([loadHealth(), loadDatasets()]);
-    } catch (e: any) {
-      addError = e.message;
-    } finally {
-      addSaving = false;
-    }
-  }
-
-  function stateColor(state: string): string {
-    switch (state) {
-      case 'ONLINE': return 'text-green-400';
-      case 'DEGRADED': return 'text-yellow-400';
-      case 'FAULTED': return 'text-red-400';
-      case 'OFFLINE': return 'text-gray-400';
-      case 'UNAVAIL': return 'text-red-400';
-      default: return 'text-gray-300';
     }
   }
 
@@ -735,616 +392,136 @@
   }
 </script>
 
-<div>
-  <div class="mb-6">
-    <a href="/pools" class="text-sm text-gray-400 hover:text-naslos-link flex items-center gap-1 w-fit">
-      <Icon name="chevron-left" size={14} />
-      Back to Pools
-    </a>
-  </div>
-
-  <PageHeader title={poolName} subtitle="Pool health, datasets and devices.">
-    <div slot="actions" class="flex gap-2">
-      <button class="btn btn-secondary" on:click={runScrubNow} disabled={scrubRunning}>
-        {scrubRunning ? 'Starting…' : 'Scrub Now'}
-      </button>
-      <button class="btn btn-secondary" on:click={openAddDrive}>Add Drive</button>
-      <button class="btn btn-primary" on:click={() => { showDatasetModal = true; datasetError = ''; }}>New Dataset</button>
+<div class="mx-auto max-w-6xl">
+  <PageHeader
+    title={poolName}
+    subtitle="Pool health, datasets and devices."
+    breadcrumbs={[{ label: 'Storage' }, { label: 'Pools', href: '/pools' }, { label: poolName }]}
+  >
+    <div slot="actions" class="flex flex-wrap gap-2">
+      <Button variant="secondary" loading={scrubRunning} on:click={runScrubNow}>Scrub Now</Button>
+      <Button variant="secondary" on:click={() => (showAddDriveModal = true)}>Add Drive</Button>
+      <Button on:click={() => (showDatasetModal = true)}>New Dataset</Button>
     </div>
   </PageHeader>
 
   {#if scrubMessage}
     <div
       role={scrubError ? 'alert' : 'status'}
-      class={scrubError ? 'callout callout-bad mb-4' : 'callout callout-ok mb-4'}
-    >{scrubMessage}</div>
-  {/if}
-  {#if schedulesError}<div role="alert" class="callout callout-bad mb-4">{schedulesError}</div>{/if}
-
-  {#if loading}
-    <LoadingState label="Loading health data..." />
-  {:else if error}
-    <ErrorState message={error} retry={loadHealth} />
-  {:else if health}
-    <!-- Status Overview -->
-    <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
-      <div class="card">
-        <div class="text-sm text-gray-400 mb-1">State</div>
-        <div class="text-2xl font-bold {stateColor(health.state)}">{health.state}</div>
-      </div>
-      <div class="card">
-        <div class="text-sm text-gray-400 mb-1">Scan Status</div>
-        <div class="text-lg font-medium">{health.scan || '—'}</div>
-      </div>
-      <div class="card">
-        <div class="text-sm text-gray-400 mb-1">Errors</div>
-        <div class="text-lg font-medium {health.errors && health.errors !== 'No known data errors' ? 'text-yellow-400' : ''}">{health.errors || '—'}</div>
-      </div>
-      <div class="card">
-        <div class="text-sm text-gray-400 mb-1">Devices</div>
-        <div class="text-2xl font-bold text-naslos-link">{health.config.length}</div>
-      </div>
+      class={scrubError ? 'callout callout-bad' : 'callout callout-ok'}
+    >
+      {scrubMessage}
     </div>
+  {/if}
+  {#if actionError}
+    <div role="alert" class="callout callout-bad">{actionError}</div>
+  {/if}
+  {#if schedulesError}
+    <ErrorState message={schedulesError} retry={loadSchedules} />
+  {/if}
 
-    <!-- I/O Statistics -->
-    {#if health.ioStats && (health.ioStats.readOps || health.ioStats.writeOps)}
-      <div class="card mb-6">
-        <h2 class="text-xl font-bold mb-4">I/O Statistics</h2>
-        <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <div>
-            <div class="text-sm text-gray-400">Read Ops</div>
-            <div class="text-lg font-medium">{health.ioStats.readOps || '—'}</div>
-          </div>
-          <div>
-            <div class="text-sm text-gray-400">Write Ops</div>
-            <div class="text-lg font-medium">{health.ioStats.writeOps || '—'}</div>
-          </div>
-          <div>
-            <div class="text-sm text-gray-400">Read Bandwidth</div>
-            <div class="text-lg font-medium">{health.ioStats.readBW || '—'}</div>
-          </div>
-          <div>
-            <div class="text-sm text-gray-400">Write Bandwidth</div>
-            <div class="text-lg font-medium">{health.ioStats.writeBW || '—'}</div>
-          </div>
-        </div>
-      </div>
+  <AsyncState {loading} error={error} loadingText="Loading health data..." onRetry={loadHealth}>
+    {#if health}
+      <PoolHealthSummary {health} />
+
+      <PoolDatasetsCard
+        {datasets}
+        error={datasetsError}
+        {poolName}
+        {schedules}
+        on:new={() => (showDatasetModal = true)}
+        on:delete={(e) => deleteDataset(e.detail)}
+        on:unlock={(e) => unlockDataset(e.detail)}
+        on:lock={(e) => lockDataset(e.detail)}
+        on:schedule={(e) => openScheduleForDataset(e.detail)}
+      />
+
+      <PoolZvolsCard
+        {zvols}
+        error={zvolsError}
+        {poolName}
+        on:new={() => (showZvolModal = true)}
+        on:resize={(e) => (resizeZvol = e.detail)}
+        on:delete={(e) => deleteZvol(e.detail)}
+      />
+
+      {#if !schedulesError}
+        <PoolSchedulesCard
+          {schedules}
+          {poolName}
+          {scheduleableDatasets}
+          on:scrub={runScrubNow}
+          on:scrubEdit={() =>
+            openSchedule(
+              'scrub',
+              poolName,
+              schedules.find((s) => s.kind === 'scrub' && s.target === poolName) ?? null
+            )}
+          on:addSnapshot={() => openSchedule('snapshot', scheduleableDatasets[0]?.name ?? '', null)}
+          on:edit={(e) => openSchedule(e.detail.kind, e.detail.target, e.detail)}
+          on:remove={(e) => removeSchedule(e.detail)}
+        />
+      {/if}
     {/if}
-
-    <!-- Datasets: the level shares point at -->
-    <div class="card mt-6">
-      <div class="flex items-center justify-between mb-4">
-        <h2 class="text-xl font-bold">Datasets</h2>
-        <button class="btn btn-secondary btn-sm" on:click={() => { showDatasetModal = true; datasetError = ''; }}>New Dataset</button>
-      </div>
-
-      {#if datasetsError}
-        <p role="alert" class="text-red-400 text-sm">{datasetsError}</p>
-      {:else if datasets.length === 0}
-        <p class="text-gray-400 text-sm">No datasets yet. Create one to have a place for a share.</p>
-      {:else}
-        <div class="space-y-2">
-          {#each datasets as ds}
-            <div class="bg-naslos-dark rounded-lg p-3 flex items-center justify-between gap-3">
-              <div class="min-w-0">
-                <div class="font-medium truncate">
-                  {ds.name}
-                  {#if isEncryptedDataset(ds)}
-                    <span
-                      class="ml-2 text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border {isLockedDataset(ds) ? 'text-amber-300 border-amber-700' : 'text-emerald-300 border-emerald-700'}"
-                      title={isLockedDataset(ds) ? 'Key not loaded; unlock after boot' : 'Key loaded'}
-                    >{isLockedDataset(ds) ? 'Locked' : 'Unlocked'}</span>
-                  {/if}
-                </div>
-                <div class="text-xs text-gray-500">{ds.mountpoint || '—'}</div>
-              </div>
-              <div class="text-xs text-gray-400 whitespace-nowrap">
-                {ds.used || '0'} used · {ds.avail || '0'} free
-              </div>
-              <div class="flex gap-1">
-                {#if isEncryptedDataset(ds)}
-                  {#if isLockedDataset(ds)}
-                    <button
-                      class="btn btn-sm rounded border border-amber-700 text-amber-200 hover:bg-amber-900/30 whitespace-nowrap"
-                      on:click={() => unlockDataset(ds.name)}
-                      title="Load this dataset's key from its Secret"
-                    >Unlock</button>
-                  {:else}
-                    <button
-                      class="btn btn-sm rounded border border-naslos-border text-gray-200 hover:bg-naslos-dark whitespace-nowrap"
-                      on:click={() => lockDataset(ds.name)}
-                      title="Unload the key; the data stays on disk"
-                    >Lock</button>
-                  {/if}
-                {/if}
-                {#if ds.name !== poolName}
-                  <button
-                    class="btn btn-sm rounded border border-naslos-border text-gray-200 hover:bg-naslos-dark whitespace-nowrap"
-                    on:click={() => openSchedule('snapshot', ds.name, snapshotScheduleFor(ds.name))}
-                    title={snapshotScheduleFor(ds.name) ? 'Edit this dataset’s snapshot schedule' : 'Schedule periodic snapshots'}
-                  >{snapshotScheduleFor(ds.name) ? 'Schedule ✓' : 'Schedule'}</button>
-                {/if}
-                <button
-                  class="btn btn-sm rounded border border-naslos-border text-red-300 hover:bg-red-900/30 whitespace-nowrap"
-                  on:click={() => deleteDataset(ds.name, false)}
-                  title="Destroy this dataset"
-                >Delete</button>
-              </div>
-            </div>
-          {/each}
-        </div>
-      {/if}
-    </div>
-
-    <!-- Block volumes (FR-ZVOL) -->
-    <div class="card mt-6">
-      <div class="flex items-center justify-between mb-4">
-        <h2 class="text-xl font-bold">Block volumes (zvols)</h2>
-        <button class="btn btn-secondary btn-sm" on:click={openZvol}>New zvol</button>
-      </div>
-      <p class="text-xs text-gray-500 mb-3">
-        A zvol is a raw block device (<code class="text-xs">/dev/zvol/{poolName}/…</code>), not a
-        folder you can share over SMB/NFS. Resize only grows a zvol and is refused while it is in
-        use; iSCSI export is not implemented yet (see <code class="text-xs">docs/iscsi.md</code>).
-      </p>
-
-      {#if zvolsError}
-        <p role="alert" class="text-red-400 text-sm">{zvolsError}</p>
-      {:else if zvols.length === 0}
-        <p class="text-gray-400 text-sm">No block volumes in this pool.</p>
-      {:else}
-        <div class="space-y-2">
-          {#each zvols as zvol (zvol.name)}
-            <div class="bg-naslos-dark rounded-lg p-3 flex flex-wrap items-center justify-between gap-3">
-              <div class="min-w-0">
-                <div class="font-medium truncate">{zvol.name}</div>
-                <div class="text-xs text-gray-500">
-                  volblocksize {zvolBlocksizeLabel(zvol.volblocksize)} · compression {zvol.compression || '—'}
-                </div>
-              </div>
-              <div class="text-xs text-gray-400 whitespace-nowrap">
-                {zvol.volsize || '—'} size · {zvol.used || '0'} used · {zvol.avail || '0'} free
-              </div>
-              <div class="flex gap-1">
-                <button
-                  class="btn btn-sm rounded border border-naslos-border text-gray-200 hover:bg-naslos-dark whitespace-nowrap"
-                  on:click={() => openResize(zvol)}
-                  title="Grow this zvol"
-                >Resize</button>
-                <button
-                  class="btn btn-sm rounded border border-naslos-border text-red-300 hover:bg-red-900/30 whitespace-nowrap"
-                  on:click={() => deleteZvol(zvol)}
-                  title="Destroy this zvol"
-                >Delete</button>
-              </div>
-            </div>
-          {/each}
-        </div>
-      {/if}
-    </div>
-
-    <!-- Scheduled maintenance (FR-STO-10/11) -->
-    <div class="card mt-6">
-      <div class="flex items-center justify-between mb-4">
-        <h2 class="text-xl font-bold">Maintenance schedules</h2>
-        <button class="btn btn-secondary btn-sm" on:click={() => openSchedule('scrub', poolName ?? '', scrubSchedule)}>
-          {scrubSchedule ? 'Edit scrub schedule' : 'Schedule scrub'}
-        </button>
-      </div>
-
-      <div class="bg-naslos-dark rounded-lg p-3 mb-4">
-        <div class="flex flex-wrap items-center justify-between gap-2">
-          <div>
-            <div class="font-medium">Scrub</div>
-            {#if scrubSchedule}
-              <div class="text-xs text-gray-400">
-                {scrubSchedule.cadence}{scrubSchedule.runAt ? ` ${scrubSchedule.runAt} UTC` : ''} ·
-                last {scrubSchedule.lastResult || 'never'} ({fmtTime(scrubSchedule.lastRun)}) ·
-                next {scrubSchedule.enabled ? fmtTime(scrubSchedule.nextRun) : 'disabled'}
-              </div>
-              {#if scrubSchedule.lastError}
-                <div class="text-xs text-yellow-400/90 break-words">{scrubSchedule.lastError}</div>
-              {/if}
-            {:else}
-              <div class="text-xs text-gray-500">No scrub schedule. Scrubs are read-only and verify every block's checksum.</div>
-            {/if}
-          </div>
-          <div class="flex gap-1">
-            <button class="btn btn-secondary btn-sm" on:click={runScrubNow} disabled={scrubRunning}>Scrub now</button>
-            {#if scrubSchedule}
-              <button class="btn btn-danger btn-sm" on:click={() => removeSchedule(scrubSchedule.id)}>Remove</button>
-            {/if}
-          </div>
-        </div>
-      </div>
-
-      <div class="flex items-center justify-between mb-2">
-        <h3 class="font-bold">Scheduled snapshots</h3>
-        <button
-          class="btn btn-secondary btn-sm"
-          on:click={() => openSchedule('snapshot', scheduleableDatasets[0]?.name ?? '')}
-          disabled={scheduleableDatasets.length === 0}
-        >
-          Add snapshot schedule
-        </button>
-      </div>
-      {#if scheduleableDatasets.length === 0}
-        <p class="text-sm text-gray-400">Create a dataset below this pool first; the pool root cannot be scheduled.</p>
-      {:else if snapshotSchedules.length === 0}
-        <p class="text-sm text-gray-400">
-          No dataset has a snapshot schedule yet. A schedule creates its own
-          <code class="text-xs">naslos-YYYY-MM-DD_HH-MM-SS</code> snapshots (visible as SMB previous
-          versions) and keeps the newest N; it never deletes your snapshots.
-        </p>
-      {:else}
-        <div class="space-y-2">
-          {#each snapshotSchedules as s (s.id)}
-            <div class="bg-naslos-dark rounded-lg p-3 flex flex-wrap items-center justify-between gap-2">
-              <div class="min-w-0">
-                <div class="font-medium truncate">{s.target}</div>
-                <div class="text-xs text-gray-400">
-                  {s.cadence}{s.runAt ? ` ${s.runAt} UTC` : ''} · keep {s.keep || 'all'}
-                  {s.keep ? 'newest' : ''}{s.recursive ? ' · recursive' : ''} ·
-                  last {s.lastResult || 'never'} ({fmtTime(s.lastRun)}) · next {s.enabled ? fmtTime(s.nextRun) : 'disabled'}
-                </div>
-                {#if s.lastError}<div class="text-xs text-yellow-400/90 break-words">{s.lastError}</div>{/if}
-              </div>
-              <div class="flex gap-1">
-                <button class="btn btn-secondary btn-sm" on:click={() => openSchedule('snapshot', s.target, s)}>Edit</button>
-                <button class="btn btn-danger btn-sm" on:click={() => removeSchedule(s.id)}>Remove</button>
-              </div>
-            </div>
-          {/each}
-        </div>
-      {/if}
-    </div>
-
-    <!-- Device Tree -->
-    <div class="card mt-6">
-      <h2 class="text-xl font-bold mb-4">Device Configuration</h2>
-      <div class="space-y-2">
-        {#each health.config as dev}
-          <div class="bg-naslos-dark rounded-lg p-3">
-            <div class="flex items-center justify-between">
-              <div class="flex items-center gap-3">
-                <span class="font-medium">{dev.name}</span>
-                <StatusBadge state={dev.state} />
-              </div>
-              <div class="text-xs text-gray-500">
-                Read: {dev.read || '0'} · Write: {dev.write || '0'} · Cksum: {dev.cksum || '0'}
-              </div>
-            </div>
-            {#if dev.devices && dev.devices.length > 0}
-              <div class="mt-2 pl-4 border-l-2 border-naslos-border space-y-1">
-                {#each dev.devices as child}
-                  <div class="flex items-center justify-between text-sm">
-                    <div class="flex items-center gap-2">
-                      <span class="text-gray-500" aria-hidden="true">└</span>
-                      <span>{child.name}</span>
-                      <StatusBadge state={child.state} />
-                    </div>
-                    <div class="text-xs text-gray-500">
-                      Read: {child.read || '0'} · Write: {child.write || '0'} · Cksum: {child.cksum || '0'}
-                    </div>
-                  </div>
-                {/each}
-              </div>
-            {/if}
-          </div>
-        {/each}
-      </div>
-    </div>
-  {/if}
+  </AsyncState>
 </div>
 
-<!-- Schedule modal (FR-STO-10/11) -->
-{#if showScheduleModal}
-  <Modal
-    title={scheduleKind === 'scrub' ? `Scrub schedule for ${scheduleTarget}` : `Snapshot schedule for ${scheduleTarget}`}
-    onClose={() => (showScheduleModal = false)}
-  >
-    {#if scheduleKind === 'snapshot'}
-      <p class="text-sm text-gray-400">
-        The schedule creates snapshots named <code class="text-xs">naslos-YYYY-MM-DD_HH-MM-SS</code>
-        (UTC) and keeps the newest <strong>{scheduleKeep || 'all'}</strong>. Snapshots you create
-        yourself are never removed.
-      </p>
-      <div>
-        <label class="label" for="schedule-target">Dataset</label>
-        <select
-          id="schedule-target"
-          class="input w-full"
-          bind:value={scheduleTarget}
-          on:change={selectScheduleTarget}
-        >
-          {#each scheduleableDatasets as d}
-            <option value={d.name}>{d.name}</option>
-          {/each}
-        </select>
-        {#if scheduleId}
-          <p class="text-xs text-gray-500 mt-1">This dataset already has a schedule; saving updates it.</p>
-        {/if}
-      </div>
-    {:else}
-      <p class="text-sm text-gray-400">
-        A scrub is read-only: ZFS reads every block and verifies its checksum. It
-        is skipped when a scrub or resilver is already running.
-      </p>
-    {/if}
-
-    <div>
-      <label class="label" for="schedule-cadence">Cadence</label>
-      <select id="schedule-cadence" value={scheduleCadence} on:change={changeScheduleCadence} class="input w-full">
-        {#if scheduleKind === 'snapshot'}
-          <option value="hourly">Hourly</option>
-        {/if}
-        <option value="daily">Daily</option>
-        <option value="weekly">Weekly</option>
-      </select>
-    </div>
-
-    {#if scheduleCadence !== 'hourly'}
-      <div>
-        <label class="label" for="schedule-run-at">Run at (UTC)</label>
-        <input
-          id="schedule-run-at"
-          type="text"
-          bind:value={scheduleRunAt}
-          placeholder={scheduleCadence === 'weekly' ? 'Mon 02:30' : '02:30'}
-          class="input w-full"
-        />
-        <p class="text-xs text-gray-500 mt-1">
-          {scheduleCadence === 'weekly' ? 'Weekday and time, e.g. Sun 02:30.' : 'Time of day, e.g. 02:30.'}
-        </p>
-      </div>
-    {/if}
-
-    {#if scheduleKind === 'snapshot'}
-      <div>
-        <label class="label" for="schedule-keep">Keep newest</label>
-        <input id="schedule-keep" type="number" min="0" bind:value={scheduleKeep} class="input w-full" />
-        <p class="text-xs text-gray-500 mt-1">0 keeps every scheduler-created snapshot.</p>
-      </div>
-      <label class="flex items-start gap-3 cursor-pointer">
-        <input type="checkbox" class="mt-1" bind:checked={scheduleRecursive} />
-        <span class="text-sm">Include child datasets (recursive snapshot)</span>
-      </label>
-    {/if}
-
-    {#if scheduleError}<div role="alert" class="p-3 rounded-lg bg-red-900/30 border border-red-700 text-red-300 text-sm">{scheduleError}</div>{/if}
-
-    <div slot="footer">
-      {#if scheduleId}
-        <button class="btn btn-danger" on:click={() => { showScheduleModal = false; removeSchedule(scheduleId); }}>Remove</button>
-      {/if}
-      <button class="btn btn-secondary" on:click={() => (showScheduleModal = false)}>Cancel</button>
-      <button class="btn btn-primary" on:click={saveSchedule} disabled={scheduleSaving || !scheduleTarget}>
-        {scheduleSaving ? 'Saving…' : 'Save schedule'}
-      </button>
-    </div>
-  </Modal>
-{/if}
-
-<!-- New Dataset modal -->
 {#if showDatasetModal}
-  <Modal title="New Dataset" onClose={() => (showDatasetModal = false)}>
-    <p class="text-sm text-gray-400">
-      A dataset inside <span class="text-naslos-link">{poolName}</span> becomes a folder you can share.
-      Nested names work: <code class="text-xs">photos/2026</code>.
-    </p>
-
-    <div>
-      <label class="label" for="pool-field-1">Name *</label>
-      <input id="pool-field-1" type="text" bind:value={datasetName} placeholder="e.g. media" class="input w-full" />
-    </div>
-
-    <div>
-      <label class="label" for="pool-field-2">Compression</label>
-      <select id="pool-field-2" bind:value={datasetCompression} class="input w-full">
-        <option value="lz4">lz4 (fast, good default)</option>
-        <option value="zstd">zstd (better ratio, more CPU)</option>
-        <option value="off">off</option>
-        <option value="gzip">gzip</option>
-      </select>
-    </div>
-
-    <div>
-      <label class="label" for="pool-field-3">Quota</label>
-      <input id="pool-field-3" type="text" bind:value={datasetQuota} placeholder="e.g. 500G (empty = pool-wide limit)" class="input w-full" />
-    </div>
-
-    <label class="flex items-start gap-3 cursor-pointer">
-      <input type="checkbox" class="mt-1" bind:checked={datasetEncrypted} />
-      <span>
-        Encrypt this dataset
-        <span class="block text-xs text-gray-500">
-          The key is generated by the API into a Kubernetes Secret; the browser
-          never sees it. An administrator must unlock the dataset after every
-          reboot. Losing the key Secret loses the data. Encryption is
-          create-only: existing datasets cannot be converted in place.
-        </span>
-      </span>
-    </label>
-
-    {#if datasetError}<div role="alert" class="p-3 rounded-lg bg-red-900/30 border border-red-700 text-red-300 text-sm">{datasetError}</div>{/if}
-
-    <div slot="footer">
-      <button class="btn btn-secondary" on:click={() => (showDatasetModal = false)}>Cancel</button>
-      <button class="btn btn-primary" on:click={createDataset} disabled={datasetSaving || !datasetName.trim()}>
-        {datasetSaving ? 'Creating...' : 'Create Dataset'}
-      </button>
-    </div>
-  </Modal>
+  <NewDatasetModal
+    {poolName}
+    onClose={() => (showDatasetModal = false)}
+    onCreated={() => {
+      showDatasetModal = false;
+      void loadDatasets();
+    }}
+  />
 {/if}
 
-<!-- Add Drive modal -->
-{#if showAddDriveModal}
-  <Modal wide title="Add Drive to {poolName}" onClose={() => (showAddDriveModal = false)}>
-    <p class="text-sm text-gray-400">
-      The selected disks become a new vdev in this pool. Existing data is not redistributed, and a disk
-      that already belongs to a pool cannot be selected.
-    </p>
-
-    {#if disksError}
-      <p role="alert" class="text-red-400 text-sm">{disksError}</p>
-    {:else if disks.length === 0}
-      <p class="text-gray-400 text-sm">No disks detected.</p>
-    {:else}
-      <div class="space-y-2">
-        {#each disks as disk}
-          <label
-            class="flex items-center gap-3 p-3 rounded-lg border border-naslos-border {disk.inPool ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:bg-naslos-dark'}"
-          >
-            <input
-              type="checkbox"
-              class="w-4 h-4 rounded"
-              disabled={!!disk.inPool || isZfsMember(disk.device)}
-              checked={selectedDisks.includes(disk.device)}
-              on:change={() => toggleDisk(disk.device)}
-            />
-            <div class="flex-1">
-              <div class="font-medium">{disk.device}</div>
-              <div class="text-xs text-gray-500">
-                {(disk.size / 1024 / 1024 / 1024).toFixed(1)} GB · {disk.type || 'disk'}
-              </div>
-            </div>
-            {#if disk.inPool}
-              <span class="badge badge-neutral">in pool {disk.inPool}</span>
-            {:else if isZfsMember(disk.device)}
-              <span class="badge badge-bad">holds a ZFS pool</span>
-            {:else if (disk.signatures || []).length > 0}
-              <span class="badge badge-warn">contains {(disk.signatures || []).join(', ')}</span>
-            {:else}
-              <span class="badge badge-ok">available</span>
-            {/if}
-          </label>
-        {/each}
-      </div>
-    {/if}
-
-    <div>
-      <label class="label" for="pool-field-4">Topology</label>
-      <select id="pool-field-4" bind:value={addTopology} class="input w-full">
-        <option value="single">Stripe (no redundancy)</option>
-        <option value="mirror">Mirror (2+ disks, survives 1 failure)</option>
-        <option value="raidz1">RAIDZ1 (2+ disks, survives 1 failure)</option>
-        <option value="raidz2">RAIDZ2 (3+ disks, survives 2 failures)</option>
-        <option value="raidz3">RAIDZ3 (4+ disks, survives 3 failures)</option>
-      </select>
-      <p class="text-xs mt-1 {addTopology === 'single' ? 'text-yellow-400' : 'text-gray-500'}">
-        {topologyHint()} Needs at least {topologyDisksNeeded[addTopology] || 1} disk{topologyDisksNeeded[addTopology] > 1 ? 's' : ''}.
-      </p>
-    </div>
-
-    <label class="flex items-center gap-3 cursor-pointer">
-      <input type="checkbox" bind:checked={addForce} class="w-4 h-4 rounded" />
-      <span class="text-gray-300 text-sm">Force: overwrite any existing signature on the disks (required when a selected disk already contains data)</span>
-    </label>
-    {#if addForce}
-      <p role="alert" class="text-xs text-red-400">
-        Forcing writes over whatever is on the disks. If a disk holds another pool's label, that pool is destroyed.
-      </p>
-    {/if}
-
-    {#if addError}<div role="alert" class="p-3 rounded-lg bg-red-900/30 border border-red-700 text-red-300 text-sm">{addError}</div>{/if}
-
-    <div slot="footer">
-      <button class="btn btn-secondary" on:click={() => (showAddDriveModal = false)}>Cancel</button>
-      <button
-        class="btn btn-primary"
-        on:click={addDevices}
-        disabled={addSaving || selectedDisks.length < (topologyDisksNeeded[addTopology] || 1) || (needsWipeConfirm() && !addForce)}
-      >
-        {addSaving ? 'Adding...' : `Add ${selectedDisks.length || ''} disk${selectedDisks.length === 1 ? '' : 's'}`}
-      </button>
-    </div>
-  </Modal>
-{/if}
-
-<!-- New zvol modal (FR-ZVOL) -->
 {#if showZvolModal}
-  <Modal title="New zvol" onClose={() => (showZvolModal = false)}>
-    <p class="text-sm text-gray-400">
-      A zvol inside <span class="text-naslos-link">{poolName}</span> is a raw block device. It has
-      no filesystem until a consumer formats it, and it cannot be shared over SMB/NFS.
-    </p>
-
-    <div>
-      <label class="label" for="zvol-name">Name *</label>
-      <input id="zvol-name" type="text" bind:value={zvolName} placeholder="e.g. vm-disk1" class="input w-full" />
-      <p class="text-xs text-gray-500 mt-1">Nested names work: <code class="text-xs">vms/disk1</code>.</p>
-    </div>
-
-    <div>
-      <label class="label" for="zvol-size">Size *</label>
-      <input id="zvol-size" type="text" bind:value={zvolSize} placeholder="e.g. 10G" class="input w-full" />
-      <p class="text-xs text-gray-500 mt-1">A ZFS size such as <code class="text-xs">512M</code>, <code class="text-xs">10G</code> or <code class="text-xs">1.5T</code>.</p>
-    </div>
-
-    <div>
-      <label class="label" for="zvol-blocksize">Block size</label>
-      <select id="zvol-blocksize" bind:value={zvolBlocksize} class="input w-full">
-        <option value="">Default (leave to ZFS)</option>
-        <option value="4096">4 KiB</option>
-        <option value="8192">8 KiB</option>
-        <option value="16384">16 KiB</option>
-        <option value="32768">32 KiB</option>
-        <option value="65536">64 KiB</option>
-        <option value="131072">128 KiB</option>
-        <option value="1048576">1 MiB</option>
-      </select>
-    </div>
-
-    <div>
-      <label class="label" for="zvol-compression">Compression</label>
-      <select id="zvol-compression" bind:value={zvolCompression} class="input w-full">
-        <option value="lz4">lz4 (fast, good default)</option>
-        <option value="zstd">zstd (better ratio, more CPU)</option>
-        <option value="off">off</option>
-        <option value="gzip">gzip</option>
-      </select>
-    </div>
-
-    {#if zvolError}<div role="alert" class="p-3 rounded-lg bg-red-900/30 border border-red-700 text-red-300 text-sm">{zvolError}</div>{/if}
-
-    <div slot="footer">
-      <button class="btn btn-secondary" on:click={() => (showZvolModal = false)}>Cancel</button>
-      <button
-        class="btn btn-primary"
-        on:click={createZvol}
-        disabled={zvolSaving || !zvolName.trim() || !zvolSize.trim()}
-      >
-        {zvolSaving ? 'Creating…' : 'Create zvol'}
-      </button>
-    </div>
-  </Modal>
+  <NewZvolModal
+    {poolName}
+    onClose={() => (showZvolModal = false)}
+    onCreated={() => {
+      showZvolModal = false;
+      void loadZvols();
+    }}
+  />
 {/if}
 
-<!-- Resize zvol modal (FR-ZVOL-03) -->
 {#if resizeZvol}
-  <Modal title={`Resize ${resizeZvol.name}`} onClose={() => (resizeZvol = null)}>
-    <p class="text-sm text-gray-400">
-      Current size: <strong>{resizeZvol.volsize}</strong>
-      {#if resizeZvol.volsizeBytes > 0}
-        (<code class="text-xs">{resizeZvol.volsizeBytes}</code> bytes)
-      {/if}. Resizing only grows a zvol: a shrink is
-      refused because it can corrupt the filesystem inside it, and a resize is refused while the
-      zvol is in use.
-    </p>
-
-    <div>
-      <label class="label" for="zvol-resize-size">New size *</label>
-      <input id="zvol-resize-size" type="text" bind:value={resizeSize} placeholder="e.g. 20G" class="input w-full" />
-    </div>
-
-    {#if resizeError}<div role="alert" class="p-3 rounded-lg bg-red-900/30 border border-red-700 text-red-300 text-sm">{resizeError}</div>{/if}
-
-    <div slot="footer">
-      <button class="btn btn-secondary" on:click={() => (resizeZvol = null)}>Cancel</button>
-      <button class="btn btn-primary" on:click={submitResize} disabled={resizeSaving || !resizeSize.trim()}>
-        {resizeSaving ? 'Resizing…' : 'Resize'}
-      </button>
-    </div>
-  </Modal>
+  <ResizeZvolModal
+    zvol={resizeZvol}
+    onClose={() => (resizeZvol = null)}
+    onResized={() => {
+      resizeZvol = null;
+      void loadZvols();
+    }}
+  />
 {/if}
 
+{#if showScheduleModal}
+  <ScheduleModal
+    kind={scheduleKind}
+    target={scheduleTarget}
+    existing={scheduleExisting}
+    {scheduleableDatasets}
+    {schedules}
+    onClose={() => (showScheduleModal = false)}
+    onSaved={() => {
+      showScheduleModal = false;
+      void loadSchedules();
+    }}
+    on:remove={(e) => removeSchedule(e.detail)}
+  />
+{/if}
+
+{#if showAddDriveModal}
+  <AddDriveModal
+    {poolName}
+    onClose={() => (showAddDriveModal = false)}
+    onAdded={() => {
+      showAddDriveModal = false;
+      void Promise.all([loadHealth(), loadDatasets()]);
+    }}
+  />
+{/if}

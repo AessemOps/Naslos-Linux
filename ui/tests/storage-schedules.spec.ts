@@ -64,8 +64,12 @@ test('a snapshot schedule can be created, listed and removed from the pool page'
     await expect(page.getByRole('heading', { name: 'Scheduled snapshots' })).toBeVisible();
     const card = page.locator('div.bg-naslos-dark').filter({ hasText: full }).filter({ hasText: 'keep 3' });
     await expect(card).toBeVisible();
-    page.once('dialog', (d) => d.accept());
     await card.getByRole('button', { name: 'Remove' }).click();
+    const confirmDialog = page.locator('.fixed.inset-0');
+    await expect(
+      confirmDialog.getByRole('heading', { name: 'Delete schedule' })
+    ).toBeVisible();
+    await confirmDialog.getByRole('button', { name: 'Delete schedule' }).click();
 
     await expect
       .poll(async () => {
