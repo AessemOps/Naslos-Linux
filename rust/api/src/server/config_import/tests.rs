@@ -1267,3 +1267,27 @@ async fn a_new_share_takes_the_exported_smb_options() {
     assert!(stored.shadow_copies);
     assert!(stored.audit);
 }
+
+#[test]
+fn a_reordered_or_repeated_cloud_destination_set_is_the_same_schedule() {
+    let mut old = crate::cloud::schedules::ScheduleEntry {
+        id: "s1".into(),
+        dataset: "tank/data".into(),
+        destinations: vec!["d2".into(), "d1".into()],
+        keep_lineages: 2,
+        enabled: true,
+        ..Default::default()
+    };
+    let mut new = old.clone();
+    new.destinations = vec!["d1".into(), "d2".into(), "d1".into()];
+    assert!(cloud_schedule_changes(&old, &new).is_empty());
+    assert_eq!(
+        crate::cloud::schedules::destination_set(&new.destinations),
+        vec!["d1".to_string(), "d2".to_string()]
+    );
+    old.destinations = vec!["d1".into()];
+    assert_eq!(
+        cloud_schedule_changes(&old, &new),
+        vec!["destinations".to_string()]
+    );
+}

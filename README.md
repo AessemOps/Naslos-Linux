@@ -60,6 +60,13 @@ chart, a Kubernetes workload, or an Image Factory schematic. Nothing is forked.
   node: GUID-based incrementals, recursive sends, cancellable jobs, live
   progress and history, and prefix-scoped destination retention that never
   touches user snapshots.
+- **Cloud backup.** Send a dataset to Backblaze B2, Amazon S3, Cloudflare R2 or
+  MinIO as encrypted chunks plus a signed manifest: GUID incrementals, a
+  lineage-preserving retention policy, resume after an interruption, restore
+  into a new dataset with a one-pass preflight, structure/content verification,
+  scheduled fan-out to several destinations, and an optional LAN/private
+  endpoint allowlist. The bucket never holds plaintext or a dataset key (see
+  [docs/cloud-backup.md](docs/cloud-backup.md)).
 - **Disk health.** Per-disk SMART (read-only, standby-safe) plus ZFS vdev state
   and error counters, with temperature and wear threshold alerts.
 
@@ -122,8 +129,9 @@ chart, a Kubernetes workload, or an Image Factory schematic. Nothing is forked.
   backup, ZFS/agent health, and VM events (see
   [docs/notifications.md](docs/notifications.md)).
 - **Config export and import.** Download a versioned, secret-free JSON snapshot
-  of shares, snapshot/scrub and Buddy schedules, domains, DDNS entries (without
-  credentials), app records, and registered app datasets. Restore goes through
+  of shares, snapshot/scrub, Buddy and cloud schedules, cloud destinations
+  (without credentials), domains, DDNS entries (without credentials), app
+  records, and registered app datasets. Restore goes through
   a strict dry-run plan and an explicit apply. Import never injects credentials
   or trusts exported IDs, and never deletes unrelated records (see
   [docs/api.md](docs/api.md#system-config-exportimport-fr-cfg-see-specmd-315)).
@@ -236,6 +244,7 @@ The full set lives in [`docs/`](docs/README.md). Start with the
 | [datasets-isolation](docs/datasets-isolation.md) | Isolating installed apps from the datasets root |
 | [virtual-machines](docs/virtual-machines.md) | QEMU supervisor, networking, console, snapshots |
 | [buddy-backup](docs/buddy-backup.md) | Owner-to-owner encrypted backup: enrollment, verify, restore |
+| [cloud-backup](docs/cloud-backup.md) | S3-compatible encrypted ZFS backup: providers, setup, DR |
 | [monitoring](docs/monitoring.md) / [reporting](docs/reporting.md) | Live metrics and bounded history |
 | [notifications](docs/notifications.md) | ntfy, webhook, SMTP, and syslog channels |
 | [deployment](docs/deployment.md) | Prerequisites, Make targets, Helm values |

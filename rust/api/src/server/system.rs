@@ -88,6 +88,16 @@ pub async fn reboot_post(
             serde_json::json!({ "error": "a Buddy backup job is running" }),
         );
     }
+    if state
+        .cloud
+        .as_ref()
+        .is_some_and(|cloud| cloud.jobs.has_running())
+    {
+        return json(
+            StatusCode::CONFLICT,
+            serde_json::json!({ "error": "a cloud backup job is running" }),
+        );
+    }
     if let Some(current) = read_status(&state).await {
         if active_phase(&current.phase) {
             return json(
@@ -269,6 +279,16 @@ pub async fn operation_post(State(state): State<Arc<AppState>>, body: Body) -> R
         return json(
             StatusCode::CONFLICT,
             serde_json::json!({ "error": "a Buddy backup job is running" }),
+        );
+    }
+    if state
+        .cloud
+        .as_ref()
+        .is_some_and(|cloud| cloud.jobs.has_running())
+    {
+        return json(
+            StatusCode::CONFLICT,
+            serde_json::json!({ "error": "a cloud backup job is running" }),
         );
     }
     if let Some(current) = read_status(&state).await {
@@ -664,6 +684,31 @@ fn system_namespace() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn reboot_refuses_while_a_cloud_job_is_running() {
+        let state = Arc::new(AppState::for_test("test-secret"));
+        state
+            .cloud
+            .as_ref()
+            .unwrap()
+            .jobs
+            .remember_running_for_test(
+                "cloud-1",
+                crate::cloud::jobs::JobKind::Send,
+                "dest",
+                "tank/src",
+                "tank/src",
+            );
+        let response = reboot_post(
+            State(state),
+            Query(RebootQuery {
+                confirm: "reboot".into(),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
 
     fn facts() -> ReleaseFacts {
         ReleaseFacts {

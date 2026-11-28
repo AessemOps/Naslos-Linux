@@ -17,6 +17,7 @@ pub mod buddy;
 pub mod catalog;
 pub mod certs;
 pub mod chartsrepo;
+pub mod cloud;
 pub mod config;
 pub mod dataset_encryption;
 pub mod datasets;

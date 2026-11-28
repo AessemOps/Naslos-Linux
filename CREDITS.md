@@ -18,7 +18,7 @@ and [`charts/naslos/Chart.lock`](charts/naslos/Chart.lock); each remains under
 its own upstream license. Applications installed at runtime from the app catalog
 are third-party software chosen by the operator and are not listed here.
 
-**Last reviewed: 2026-11-27.** Maintenance: update this file whenever a direct dependency changes in
+**Last reviewed: 2026-11-28.** Maintenance: update this file whenever a direct dependency changes in
 `rust/api/Cargo.toml`, `rust/agent/Cargo.toml`, `ui/package.json`, `charts/naslos/Chart.yaml`, or the Dockerfiles.
 It also lists the GitHub Actions used by the CI/release workflows.
 
@@ -71,6 +71,7 @@ adds the same set plus the agent-pattern token/TLS server. Direct dependencies:
 | ed25519-dalek | 2 | BSD-3-Clause | https://github.com/dalek-cryptography/ed25519-dalek |
 | flate2 | 1 | MIT OR Apache-2.0 | https://github.com/rust-lang/flate2-rs |
 | futures | 0.3 | MIT OR Apache-2.0 | https://github.com/rust-lang/futures-rs |
+| http | 1 | MIT OR Apache-2.0 | https://github.com/hyperium/http |
 | http-body-util | 0.1 | MIT | https://github.com/hyperium/http-body |
 | hyper-util | 0.1 | MIT | https://github.com/hyperium/hyper-util |
 | getrandom | 0.2 | MIT OR Apache-2.0 | https://github.com/rust-random/getrandom |
@@ -78,6 +79,7 @@ adds the same set plus the agent-pattern token/TLS server. Direct dependencies:
 | include_dir | 0.7 | MIT | https://github.com/Michael-F-Bryan/include_dir |
 | ipnet | 2 | MIT OR Apache-2.0 | https://github.com/krisprice/ipnet |
 | ldap3 | 0.12 | MIT OR Apache-2.0 | https://github.com/inejge/ldap3 |
+| object_store | =0.14.2 (`aws-base` + `ring`; the S3 transport of cloud backup, signed with our reqwest client) | Apache-2.0 | https://github.com/apache/arrow-rs-object-store |
 | portable-pty | 0.8 | MIT | https://github.com/wez/wezterm |
 | tar | 0.4 | MIT OR Apache-2.0 | https://github.com/alexcrichton/tar-rs |
 | libc | 0.2 | MIT OR Apache-2.0 | https://github.com/rust-lang/libc |
@@ -88,7 +90,7 @@ adds the same set plus the agent-pattern token/TLS server. Direct dependencies:
 | rustls-pemfile | 2 | Apache-2.0 OR ISC OR MIT | https://github.com/rustls/pemfile |
 | serde / serde_json | 1 | MIT OR Apache-2.0 | https://github.com/serde-rs/serde |
 | serde_yaml | 0.9 | MIT OR Apache-2.0 | https://github.com/dtolnay/serde-yaml |
-| sha1 / sha2 | 0.10 | MIT OR Apache-2.0 | https://github.com/RustCrypto/hashes |
+| sha1 / sha2 | 0.11 | MIT OR Apache-2.0 | https://github.com/RustCrypto/hashes |
 | ssh-key | 0.6 | Apache-2.0 OR MIT | https://github.com/RustCrypto/SSH |
 | subtle | 2 | BSD-3-Clause | https://github.com/dalek-cryptography/subtle |
 | tempfile | 3 | MIT OR Apache-2.0 | https://github.com/Stebalien/tempfile |

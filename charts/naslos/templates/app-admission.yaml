@@ -69,7 +69,7 @@ spec:
         'naslos-buddy-kek', 'naslos-authelia', 'naslos-authelia-jwt', 'naslos-openldap',
         'naslos-openldap-tls', 'naslos-openldap-ca', 'naslos-talosconfig',
         'naslos-charts-deploy-key'].exists(n, object.metadata.name == n)
-        || ['naslos-ddns-', 'naslos-env-', 'naslos-dataset-key-'].exists(p, object.metadata.name.startsWith(p))))
+        || ['naslos-ddns-', 'naslos-env-', 'naslos-dataset-key-', 'naslos-cloud-'].exists(p, object.metadata.name.startsWith(p))))
       message: "The Helm identity may not create or update the platform's reserved Secrets (proxy/TLS, agent and vmd tokens, Buddy identity and KEK, Authelia, OpenLDAP, DDNS credentials, per-app env, Talos config, chart deploy key). Name chart Secrets `<release>-...`. A release whose own name collides with one of these reserved names or prefixes is refused."
       reason: Forbidden
     - expression: "!(request.resource.group == '' && request.resource.resource == 'services' && ((has(object.spec.type) && object.spec.type != 'ClusterIP') || (has(object.spec.externalIPs) && size(object.spec.externalIPs) > 0)))"

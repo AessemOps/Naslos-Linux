@@ -50,6 +50,8 @@ pub struct Export {
     pub shares: Vec<ShareExport>,
     pub storage_schedules: Vec<StorageScheduleExport>,
     pub buddy_schedules: Vec<BuddyScheduleExport>,
+    pub cloud_destinations: Vec<CloudDestinationExport>,
+    pub cloud_schedules: Vec<CloudScheduleExport>,
     pub domains: Vec<DomainExport>,
     pub ddns_entries: Vec<DdnsEntryExport>,
     pub apps: Vec<AppExport>,
@@ -151,6 +153,65 @@ impl BuddyScheduleExport {
             cadence: schedule.cadence,
             run_at: schedule.run_at.clone(),
             prune_keep: schedule.prune_keep,
+            enabled: schedule.enabled,
+        }
+    }
+}
+
+/// A cloud destination without credentials, the Secret name or any capability
+/// or runtime result (FR-CFG; DM-9).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudDestinationExport {
+    pub id: String,
+    pub name: String,
+    pub endpoint: String,
+    pub region: String,
+    pub bucket: String,
+    pub prefix: String,
+    pub path_style: bool,
+    pub allow_insecure_http: bool,
+    pub enabled: bool,
+}
+
+impl CloudDestinationExport {
+    fn project(destination: &crate::cloud::Destination) -> Self {
+        Self {
+            id: destination.id.clone(),
+            name: destination.name.clone(),
+            endpoint: destination.endpoint.clone(),
+            region: destination.region.clone(),
+            bucket: destination.bucket.clone(),
+            prefix: destination.prefix.clone(),
+            path_style: destination.path_style,
+            allow_insecure_http: destination.allow_insecure_http,
+            enabled: destination.enabled,
+        }
+    }
+}
+
+/// A cloud backup schedule without its runtime results.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudScheduleExport {
+    pub id: String,
+    pub dataset: String,
+    pub destinations: Vec<String>,
+    pub cadence: crate::schedule::Cadence,
+    pub run_at: String,
+    pub keep_lineages: usize,
+    pub enabled: bool,
+}
+
+impl CloudScheduleExport {
+    fn project(schedule: &crate::cloud::schedules::ScheduleEntry) -> Self {
+        Self {
+            id: schedule.id.clone(),
+            dataset: schedule.dataset.clone(),
+            destinations: schedule.destination_list(),
+            cadence: schedule.cadence,
+            run_at: schedule.run_at.clone(),
+            keep_lineages: schedule.keep_lineages,
             enabled: schedule.enabled,
         }
     }
@@ -421,6 +482,30 @@ pub fn build(state: &AppState, now: DateTime<Utc>) -> Export {
             .iter()
             .map(BuddyScheduleExport::project)
             .collect(),
+        cloud_destinations: state
+            .cloud
+            .as_ref()
+            .map(|cloud| {
+                cloud
+                    .destinations
+                    .list()
+                    .iter()
+                    .map(CloudDestinationExport::project)
+                    .collect()
+            })
+            .unwrap_or_default(),
+        cloud_schedules: state
+            .cloud
+            .as_ref()
+            .map(|cloud| {
+                cloud
+                    .schedules
+                    .list()
+                    .iter()
+                    .map(CloudScheduleExport::project)
+                    .collect()
+            })
+            .unwrap_or_default(),
         domains: state
             .domains
             .list()
@@ -645,6 +730,8 @@ mod tests {
         "shares",
         "storageSchedules",
         "buddySchedules",
+        "cloudDestinations",
+        "cloudSchedules",
         "domains",
         "ddnsEntries",
         "apps",
@@ -684,6 +771,26 @@ mod tests {
         "cadence",
         "runAt",
         "pruneKeep",
+        "enabled",
+    ];
+    const CLOUD_DESTINATION_KEYS: &[&str] = &[
+        "id",
+        "name",
+        "endpoint",
+        "region",
+        "bucket",
+        "prefix",
+        "pathStyle",
+        "allowInsecureHttp",
+        "enabled",
+    ];
+    const CLOUD_SCHEDULE_KEYS: &[&str] = &[
+        "id",
+        "dataset",
+        "destinations",
+        "cadence",
+        "runAt",
+        "keepLineages",
         "enabled",
     ];
     const DOMAIN_KEYS: &[&str] = &[
@@ -824,6 +931,37 @@ mod tests {
                 attached_to: Vec::new(),
             })
             .unwrap();
+        let cloud = state.cloud.as_ref().unwrap();
+        cloud
+            .destinations
+            .put(crate::cloud::Destination {
+                id: "dest-1".into(),
+                name: "offsite".into(),
+                endpoint: "https://s3.us-west-004.backblazeb2.com".into(),
+                region: "us-west-004".into(),
+                bucket: "naslos-backups".into(),
+                prefix: "host1".into(),
+                enabled: true,
+                credentials_managed: true,
+                credentials_secret: "naslos-cloud-cred-dest-1".into(),
+                has_access_key: true,
+                has_secret_key: true,
+                ..Default::default()
+            })
+            .unwrap();
+        cloud
+            .schedules
+            .put(crate::cloud::schedules::ScheduleEntry {
+                id: "cs-1".into(),
+                dataset: "tank/media".into(),
+                destinations: vec!["dest-1".into()],
+                cadence: crate::schedule::Cadence::Daily,
+                run_at: "02:30".into(),
+                keep_lineages: 2,
+                enabled: true,
+                ..Default::default()
+            })
+            .unwrap();
 
         let now = Utc::now();
         let export = build(&state, now);
@@ -846,6 +984,16 @@ mod tests {
             &value["buddySchedules"][0],
             BUDDY_SCHEDULE_KEYS,
         );
+        assert_allowed(
+            "cloud destination",
+            &value["cloudDestinations"][0],
+            CLOUD_DESTINATION_KEYS,
+        );
+        assert_allowed(
+            "cloud schedule",
+            &value["cloudSchedules"][0],
+            CLOUD_SCHEDULE_KEYS,
+        );
         assert_allowed("domain", &value["domains"][0], DOMAIN_KEYS);
         assert_allowed(
             "dataset registry",
@@ -860,6 +1008,12 @@ mod tests {
         assert_eq!(value["storageSchedules"][0]["kind"], "snapshot");
         assert_eq!(value["storageSchedules"][0]["cadence"], "daily");
         assert_eq!(value["buddySchedules"][0]["receivers"], json!(["peer-a"]));
+        assert_eq!(value["cloudDestinations"][0]["name"], "offsite");
+        assert_eq!(value["cloudDestinations"][0]["allowInsecureHttp"], false);
+        assert_eq!(
+            value["cloudSchedules"][0]["destinations"],
+            json!(["dest-1"])
+        );
         assert_eq!(value["ddnsEntries"], json!([]));
         assert_eq!(value["apps"], json!([]));
         assert_eq!(value["datasetRegistry"][0]["name"], "media");

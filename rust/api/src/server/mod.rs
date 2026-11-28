@@ -13,6 +13,7 @@ pub mod buddy_restore;
 pub mod buddy_schedules;
 pub mod buddy_send;
 pub mod catalog;
+pub mod cloud;
 pub mod config_export;
 pub mod config_import;
 pub mod dataset_registry;
@@ -328,6 +329,38 @@ fn owner_routes() -> Router<Arc<AppState>> {
                 .post(buddy_schedules::schedules_post)
                 .delete(buddy_schedules::schedules_delete),
         )
+        // S3-compatible cloud backup (FR-REP-11/12/13). The `/test` route is
+        // registered before `{id}` so the literal suffix can never be parsed as
+        // a destination id.
+        .route(
+            "/api/cloud/destinations",
+            get(cloud::destinations_get).post(cloud::destination_post),
+        )
+        .route(
+            "/api/cloud/destinations/{id}/test",
+            post(cloud::destination_test),
+        )
+        .route(
+            "/api/cloud/destinations/{id}",
+            get(cloud::destination_get)
+                .put(cloud::destination_put)
+                .delete(cloud::destination_delete),
+        )
+        .route("/api/cloud/send", post(cloud::send_post))
+        .route("/api/cloud/restore", post(cloud::restore_post))
+        .route("/api/cloud/verify", post(cloud::verify_post))
+        .route("/api/cloud/jobs", get(cloud::jobs_get))
+        .route(
+            "/api/cloud/jobs/{id}",
+            get(cloud::job_get).delete(cloud::job_delete),
+        )
+        .route("/api/cloud/chains", get(cloud::chains_get))
+        .route(
+            "/api/cloud/schedules",
+            get(crate::cloud::schedules::schedules_get)
+                .post(crate::cloud::schedules::schedules_post)
+                .delete(crate::cloud::schedules::schedules_delete),
+        )
         .route("/api/users", get(users::users_get).post(users::users_post))
         .route(
             "/api/users/{uid}",
@@ -585,6 +618,52 @@ mod tests {
             (axum::http::Method::GET, "/api/audit".to_string()),
             (axum::http::Method::GET, "/api/audit/verify".to_string()),
             (axum::http::Method::GET, "/api/audit/export".to_string()),
+            (
+                axum::http::Method::GET,
+                "/api/cloud/destinations".to_string(),
+            ),
+            (
+                axum::http::Method::POST,
+                "/api/cloud/destinations".to_string(),
+            ),
+            (
+                axum::http::Method::POST,
+                "/api/cloud/destinations/mcp-probe/test".to_string(),
+            ),
+            (
+                axum::http::Method::GET,
+                "/api/cloud/destinations/mcp-probe".to_string(),
+            ),
+            (
+                axum::http::Method::PUT,
+                "/api/cloud/destinations/mcp-probe".to_string(),
+            ),
+            (
+                axum::http::Method::DELETE,
+                "/api/cloud/destinations/mcp-probe".to_string(),
+            ),
+            (axum::http::Method::POST, "/api/cloud/send".to_string()),
+            (axum::http::Method::POST, "/api/cloud/restore".to_string()),
+            (axum::http::Method::POST, "/api/cloud/verify".to_string()),
+            (axum::http::Method::GET, "/api/cloud/jobs".to_string()),
+            (
+                axum::http::Method::GET,
+                "/api/cloud/jobs/mcp-probe".to_string(),
+            ),
+            (
+                axum::http::Method::DELETE,
+                "/api/cloud/jobs/mcp-probe".to_string(),
+            ),
+            (
+                axum::http::Method::GET,
+                "/api/cloud/chains?destination=mcp-probe&source=tank%2Fdata".to_string(),
+            ),
+            (axum::http::Method::GET, "/api/cloud/schedules".to_string()),
+            (axum::http::Method::POST, "/api/cloud/schedules".to_string()),
+            (
+                axum::http::Method::DELETE,
+                "/api/cloud/schedules?id=mcp-probe".to_string(),
+            ),
             (axum::http::Method::GET, "/api/reports".to_string()),
             (
                 axum::http::Method::GET,

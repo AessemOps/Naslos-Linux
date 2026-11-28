@@ -42,8 +42,8 @@ offers exactly these, and the API only emits these.
 | --- | --- |
 | `zfs_health` | A pool's health leaves `ONLINE`, a disk's SMART temperature crosses `DISK_HEALTH_TEMPERATURE_C` (default 55 °C), its wear reaches `DISK_HEALTH_WEAR_PERCENT` (default 80 %), or a vdev is `DEGRADED`; per-disk conditions send one recovery notice when they clear. Polled every 60 s |
 | `disk_failure` | SMART reports `FAILED`, or a ZFS vdev is `FAULTED`/`OFFLINE`/`UNAVAIL`/`REMOVED`; one recovery notice when it clears. Polled every 60 s. See [operations.md](operations.md#disk-health) |
-| `backup_success` | Buddy Backup run completed |
-| `backup_failure` | Buddy Backup run failed |
+| `backup_success` | Buddy or cloud backup run completed (cloud sends carry the `cloud` tag) |
+| `backup_failure` | Buddy or cloud backup run failed (cloud sends carry the `cloud` tag) |
 | `audit` | The append-only audit log entered the degraded state; mutating API requests are refused until an operator repairs it. Also sent directly to ntfy as critical |
 
 The watcher interval is `HEALTH_INTERVAL_SECONDS` (default 60). A pool, disk or
