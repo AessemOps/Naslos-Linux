@@ -735,7 +735,7 @@ rsync and provider **file sync** remain `[OPEN]` below.
   `cloud::jobs::tests::a_second_send_for_the_same_pair_is_refused_but_a_different_pair_is_not`,
   `cloud::jobs::tests::cancel_is_final_and_unknown_ids_are_reported_separately`,
   `cloud::send::tests::the_manifest_preflight_refuses_a_stream_above_the_cap`,
-  `cloud::send::tests::the_snapshot_name_uses_the_per_destination_token`)*
+  `cloud::tests::the_snapshot_name_uses_the_per_destination_token`)*
 - **FR-REP-12** — Cloud object format and safety. The bucket stores only sealed
   chunks and signed manifests under
   `<prefix>/<source>/lineages/<lineage>/links/<sequence>-<chain>/`; chunk keys
