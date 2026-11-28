@@ -103,9 +103,12 @@ function createCloudMock() {
     restorePosts: [] as any[],
     jobDeletes: [] as string[],
     failDestinations: 0,
+    failJobPolls: 0,
     sendConflict: false,
     longSend: false,
     testCategory: '',
+    verifyEmptyFailure: false,
+    chainsDelayMs: 0,
     nextId: 1,
     nextJob: 0
   };
@@ -185,15 +188,31 @@ function createCloudMock() {
         if (state.testCategory) {
           return json({ ok: false, category: state.testCategory, conditionalCreate: false });
         }
-        return json({ ok: true, conditionalCreate: true });
+        current.lastTestAt = new Date().toISOString();
+        current.lastError = '';
+        return json({ ok: true, conditionalCreate: current.conditionalCreate });
       }
       if (method === 'PUT') {
         state.destinationPuts.push({ id, body });
+        const connectionFields: Array<keyof DestinationView> = [
+          'endpoint',
+          'region',
+          'bucket',
+          'prefix',
+          'pathStyle',
+          'allowInsecureHttp'
+        ];
+        const connectionChanged =
+          connectionFields.some(
+            (key) => body[key] !== undefined && body[key] !== current[key]
+          ) || Boolean(body.accessKeyId || body.secretAccessKey || body.sessionToken);
         Object.assign(current, body, {
           hasAccessKey: current.hasAccessKey || Boolean(body.accessKeyId),
           hasSecretKey: current.hasSecretKey || Boolean(body.secretAccessKey),
           hasSessionToken: current.hasSessionToken || Boolean(body.sessionToken)
         });
+        // A test result describes the connection settings it ran against.
+        if (connectionChanged) current.lastTestAt = '';
         delete (current as any).accessKeyId;
         delete (current as any).secretAccessKey;
         delete (current as any).sessionToken;
@@ -234,6 +253,9 @@ function createCloudMock() {
     }
 
     if (path === '/api/cloud/chains' && method === 'GET') {
+      if (state.chainsDelayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, state.chainsDelayMs));
+      }
       return json({ chains: state.chains });
     }
 
@@ -283,6 +305,10 @@ function createCloudMock() {
         job.finishedAt = new Date().toISOString();
         return json({ status: 'cancelling', id });
       }
+      if (state.failJobPolls > 0) {
+        state.failJobPolls -= 1;
+        return json({ error: 'the job store is unavailable' }, 500);
+      }
       const polls = (state.jobPolls.get(id) ?? 0) + 1;
       state.jobPolls.set(id, polls);
       if (job.state === 'running') {
@@ -310,13 +336,13 @@ function createCloudMock() {
         } else if (job.kind === 'verify' && polls >= 2) {
           job.state = 'failed';
           job.finishedAt = new Date().toISOString();
-          job.error = '1 chunk is missing';
+          job.error = state.verifyEmptyFailure ? 'verification failed' : '1 chunk is missing';
           job.result = {
             chain: 'chain-1',
             snapshot: 'snap-1',
             kind: 'full',
             plainBytes: 4096,
-            missingIndices: { 'chain-1': [3] },
+            missingIndices: state.verifyEmptyFailure ? {} : { 'chain-1': [3] },
             badIndices: {}
           };
         } else if (job.kind === 'restore' && polls >= 2) {
@@ -494,6 +520,28 @@ test.describe('cloud backup (mocked)', () => {
     await expect(page.getByRole('alert')).toContainText('The credentials were rejected.');
   });
 
+  test('editing a destination drops its cached test result and shows never tested', async ({
+    page
+  }) => {
+    const mock = createCloudMock();
+    mock.state.destinations = [destination()];
+    await mock.install(page);
+    await openPage(page);
+
+    await page.getByRole('button', { name: 'Test destination b2-main' }).click();
+    await expect(page.getByRole('status')).toContainText('Connection OK');
+
+    await page.getByRole('button', { name: 'Edit destination b2-main' }).click();
+    const dialog = page.getByRole('dialog', { name: 'Edit destination b2-main' });
+    await dialog.getByLabel('Bucket').fill('other-bucket');
+    await dialog.getByRole('button', { name: 'Save changes' }).click();
+
+    const row = page.getByTestId('cloud-destination');
+    await expect(row).toContainText('other-bucket');
+    await expect(row).toContainText('never tested');
+    await expect(page.getByText('Connection OK')).toHaveCount(0);
+  });
+
   test('send starts a job, polls progress and reaches succeeded', async ({ page }) => {
     const mock = createCloudMock();
     mock.state.destinations = [destination()];
@@ -516,6 +564,32 @@ test.describe('cloud backup (mocked)', () => {
       .toContain('chunk 2 of 4');
     await expect(page.getByTestId('cloud-job')).toContainText('succeeded', { timeout: 15_000 });
     await expect(page.getByTestId('cloud-job')).toContainText('chain-1');
+  });
+
+  test('a failed status poll is reported on the send card and can be retried', async ({ page }) => {
+    const mock = createCloudMock();
+    mock.state.destinations = [destination()];
+    mock.state.failJobPolls = 1;
+    await mock.install(page);
+    await openPage(page);
+    await acknowledge(page);
+
+    await selectSendPair(page);
+    await page.getByRole('button', { name: 'Send now' }).click();
+
+    const alert = page.getByRole('alert').filter({ hasText: 'Polling the job failed' });
+    await expect(alert).toBeVisible({ timeout: 15_000 });
+    await expect(alert).toContainText('the job store is unavailable');
+    await expect(page.getByTestId('cloud-job')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Send now' })).toBeEnabled();
+
+    const retry = page.getByRole('button', { name: 'Retry status' });
+    await expect(retry).toBeVisible();
+    await retry.click();
+
+    await expect(page.getByRole('progressbar')).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByTestId('cloud-job')).toContainText('succeeded', { timeout: 15_000 });
+    await expect(page.getByRole('button', { name: 'Retry status' })).toHaveCount(0);
   });
 
   test('cancel requests DELETE on the job and shows the cancelled state', async ({ page }) => {
@@ -551,7 +625,10 @@ test.describe('cloud backup (mocked)', () => {
 
   test('restore requires the typed dataset name and posts it', async ({ page }) => {
     const mock = createCloudMock();
-    mock.state.destinations = [destination()];
+    mock.state.destinations = [
+      destination(),
+      destination({ id: 'd2', name: 'r2-backup', endpoint: 'https://r2.example.test' })
+    ];
     mock.state.chains = [chain()];
     await mock.install(page);
     await openPage(page);
@@ -561,9 +638,16 @@ test.describe('cloud backup (mocked)', () => {
       page.getByRole('region', { name: 'Stored cloud backups' }).getByRole('table')
     ).toContainText('snap-1');
 
+    // Changing the filters after listing must not change what a row action
+    // restores: it operates on the listed pair.
+    await page.locator('#cloud-chains-destination').selectOption('d2');
+    await page.locator('#cloud-chains-source').fill('tank/other');
+
     await page.getByRole('button', { name: 'Restore snap-1' }).click();
     const restore = page.getByRole('dialog', { name: 'Restore snap-1' });
     await expect(restore).toBeVisible();
+    await expect(restore).toContainText('tank/media');
+    await expect(restore).toContainText('b2-main');
     await restore.getByRole('button', { name: 'Restore', exact: true }).click();
 
     const confirm = page.getByRole('dialog', { name: 'Restore backup' });
@@ -590,14 +674,30 @@ test.describe('cloud backup (mocked)', () => {
     ]);
   });
 
-  test('verify warns about egress for content mode and reports a missing index', async ({ page }) => {
+  test('verify warns about egress for content mode and reports a missing index', async ({
+    page
+  }) => {
     const mock = createCloudMock();
-    mock.state.destinations = [destination()];
+    mock.state.destinations = [
+      destination(),
+      destination({ id: 'd2', name: 'r2-backup', endpoint: 'https://r2.example.test' })
+    ];
     mock.state.chains = [chain()];
+    mock.state.chainsDelayMs = 800;
     await mock.install(page);
     await openPage(page);
 
-    await listChains(page);
+    await page.locator('#cloud-chains-destination').selectOption('d1');
+    await page.locator('#cloud-chains-source').fill('tank/media');
+    await page.getByRole('button', { name: 'List backups' }).click();
+    // Change the inputs while the list request is in flight: the result and
+    // every later action must stay on the pair the request was made for.
+    await page.locator('#cloud-chains-destination').selectOption('d2');
+    await page.locator('#cloud-chains-source').fill('tank/other');
+
+    await expect(
+      page.getByRole('region', { name: 'Stored cloud backups' }).getByRole('table')
+    ).toContainText('snap-1');
     await page.getByRole('radio', { name: /Content/ }).check();
     await expect(page.getByTestId('cloud-egress-warning')).toContainText('egress');
 
@@ -609,6 +709,46 @@ test.describe('cloud backup (mocked)', () => {
     await expect(page.getByTestId('cloud-job')).toContainText('missing chunk index 3', {
       timeout: 15_000
     });
+  });
+
+  test('a failed verify poll re-enables verify and restore and can be retried', async ({
+    page
+  }) => {
+    const mock = createCloudMock();
+    mock.state.destinations = [destination()];
+    mock.state.chains = [chain()];
+    mock.state.failJobPolls = 1;
+    await mock.install(page);
+    await openPage(page);
+
+    await listChains(page);
+    await page.getByRole('button', { name: 'Verify backups' }).click();
+
+    const alert = page.getByRole('alert').filter({ hasText: 'Polling the job failed' });
+    await expect(alert).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByRole('button', { name: 'Verify backups' })).toBeEnabled();
+    await expect(page.getByRole('button', { name: 'Restore snap-1' })).toBeEnabled();
+
+    await page.getByRole('button', { name: 'Retry status' }).click();
+    await expect(page.getByTestId('cloud-job')).toContainText('missing chunk index 3', {
+      timeout: 15_000
+    });
+  });
+
+  test('a failed verify with no missing indices does not claim success', async ({ page }) => {
+    const mock = createCloudMock();
+    mock.state.destinations = [destination()];
+    mock.state.chains = [chain()];
+    mock.state.verifyEmptyFailure = true;
+    await mock.install(page);
+    await openPage(page);
+
+    await listChains(page);
+    await page.getByRole('button', { name: 'Verify backups' }).click();
+
+    const job = page.getByTestId('cloud-job');
+    await expect(job).toContainText('verification failed', { timeout: 15_000 });
+    await expect(job).not.toContainText('All chunks are present');
   });
 
   test('a failed load shows the error state and retry recovers', async ({ page }) => {

@@ -11,6 +11,8 @@
   export let destinations: Destination[] = [];
   export let job: CloudJob | null = null;
   export let jobError = '';
+  /** Restart polling when the last status fetch failed; null while healthy. */
+  export let retry: (() => void) | null = null;
   export let starting = false;
   export let cancelling = false;
   /** False until the recovery-key acknowledgement is given. */
@@ -67,7 +69,12 @@
   </form>
 
   {#if jobError}
-    <p role="alert" class="mt-2 text-sm text-red-300">{jobError}</p>
+    <div class="mt-2 flex flex-wrap items-center gap-2">
+      <p role="alert" class="text-sm text-red-300">{jobError}</p>
+      {#if retry}
+        <Button size="sm" variant="secondary" on:click={retry}>Retry status</Button>
+      {/if}
+    </div>
   {/if}
 
   {#if job}

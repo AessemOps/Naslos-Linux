@@ -66,8 +66,8 @@
 
   {#if job.state !== 'running' && job.result}
     {#if job.kind === 'verify'}
-      {#if missingEntries.length === 0 && badEntries.length === 0}
-        <p class="text-gray-300">All chunks are present{job.state === 'succeeded' ? ' and intact' : ''}.</p>
+      {#if job.state === 'succeeded'}
+        <p class="text-gray-300">All chunks are present and intact.</p>
       {/if}
     {:else}
       <p class="text-xs text-gray-400">

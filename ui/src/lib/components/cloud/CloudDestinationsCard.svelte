@@ -23,7 +23,26 @@
     return e instanceof ApiError || e instanceof Error ? e.message : String(e);
   }
 
+  // A test result describes the connection settings it was run against. Keying
+  // the cache on them (and the credential flags) drops the result when an edit
+  // changes any of those, instead of leaving a stale "Connection OK".
+  function resultKey(d: Destination): string {
+    return [
+      d.id,
+      d.endpoint,
+      d.region,
+      d.bucket,
+      d.prefix,
+      d.pathStyle,
+      d.allowInsecureHttp,
+      d.hasAccessKey,
+      d.hasSecretKey,
+      d.hasSessionToken
+    ].join('\u0000');
+  }
+
   async function test(d: Destination) {
+    const key = resultKey(d);
     testing = d.id;
     cardError = '';
     try {
@@ -32,7 +51,7 @@
       });
       results = {
         ...results,
-        [d.id]: r.ok
+        [key]: r.ok
           ? {
               ok: true,
               text: r.conditionalCreate
@@ -43,7 +62,7 @@
       };
       dispatch('refresh');
     } catch (e) {
-      results = { ...results, [d.id]: { ok: false, text: 'The test could not run: ' + message(e) } };
+      results = { ...results, [key]: { ok: false, text: 'The test could not run: ' + message(e) } };
     } finally {
       testing = '';
     }
@@ -103,6 +122,7 @@
   {:else}
     <ul class="divide-y divide-naslos-border">
       {#each destinations as d (d.id)}
+        {@const result = results[resultKey(d)]}
         <li class="py-3" data-testid="cloud-destination">
           <div class="flex flex-wrap items-start justify-between gap-3">
             <div class="min-w-0">
@@ -148,11 +168,11 @@
               >
             </div>
           </div>
-          {#if results[d.id]}
-            {#if results[d.id].ok}
-              <p role="status" class="mt-2 text-sm text-green-300">{results[d.id].text}</p>
+          {#if result}
+            {#if result.ok}
+              <p role="status" class="mt-2 text-sm text-green-300">{result.text}</p>
             {:else}
-              <p role="alert" class="mt-2 text-sm text-red-300">{results[d.id].text}</p>
+              <p role="alert" class="mt-2 text-sm text-red-300">{result.text}</p>
             {/if}
           {/if}
         </li>

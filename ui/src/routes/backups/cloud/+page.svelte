@@ -22,6 +22,7 @@
     CloudSchedule,
     DatasetSummary,
     Destination,
+    JobKind,
     StartedJob
   } from '$lib/cloud/types';
 
@@ -29,6 +30,11 @@
     destination: string;
     source: string;
     chain: Chain;
+  }
+
+  interface TrackedJob {
+    id: string;
+    kind: JobKind;
   }
 
   let loading = true;
@@ -45,6 +51,8 @@
   let restoreTarget: RestoreTarget | null = null;
 
   let activeJob: CloudJob | null = null;
+  let lastJob: TrackedJob | null = null;
+  let pollFailed = false;
   let sendError = '';
   let jobError = '';
   let starting = false;
@@ -65,15 +73,23 @@
   }
 
   const poller = createJobPoller({
-    onUpdate: (job) => (activeJob = job),
+    onUpdate: (job) => {
+      activeJob = job;
+      pollFailed = false;
+    },
     onDone: (job) => {
       activeJob = job;
+      pollFailed = false;
+      lastJob = null;
       void afterJob(job);
     },
     // A send's failure belongs on the send card, a verify/restore failure on
-    // the chains card. `activeJob` is the job the poller last saw.
+    // the chains card. The kind comes from trackJob: activeJob is cleared
+    // before the first poll, so it cannot identify a failed first poll.
     onError: (msg) => {
-      if (activeJob?.kind === 'send') sendError = msg;
+      activeJob = null;
+      pollFailed = true;
+      if (lastJob?.kind === 'send') sendError = msg;
       else jobError = msg;
     }
   });
@@ -115,7 +131,9 @@
         (j) => j.state === 'running'
       );
       if (running && !poller.jobId) {
+        lastJob = { id: running.id, kind: running.kind };
         activeJob = running;
+        pollFailed = false;
         poller.start(running.id);
       }
     } catch {
@@ -150,12 +168,27 @@
     }
   }
 
-  function trackJob(jobId: string) {
+  function trackJob(jobId: string, kind: JobKind) {
+    lastJob = { id: jobId, kind };
+    pollFailed = false;
     jobError = '';
     sendError = '';
     cancelling = false;
     activeJob = null;
     poller.start(jobId);
+  }
+
+  // A poll failure stops the poller and clears activeJob so the forms are
+  // usable again; the server job may still be running, so let the user resume
+  // watching it.
+  function retryStatus() {
+    if (!lastJob) return;
+    pollFailed = false;
+    jobError = '';
+    sendError = '';
+    cancelling = false;
+    activeJob = null;
+    poller.start(lastJob.id);
   }
 
   function acknowledgeRecovery() {
@@ -187,6 +220,8 @@
     sendError = '';
     jobError = '';
     activeJob = null;
+    lastJob = null;
+    pollFailed = false;
     poller.stop();
     starting = true;
     try {
@@ -199,7 +234,7 @@
           forceFull: event.detail.forceFull
         })
       });
-      trackJob(started.jobId);
+      trackJob(started.jobId, 'send');
     } catch (e) {
       if (e instanceof ApiError && e.status === 409) {
         sendError =
@@ -227,9 +262,13 @@
     }
   }
 
-  function jobStarted(event: CustomEvent<string>) {
+  function verifyStarted(event: CustomEvent<string>) {
+    trackJob(event.detail, 'verify');
+  }
+
+  function restoreStarted(event: CustomEvent<string>) {
     restoreTarget = null;
-    trackJob(event.detail);
+    trackJob(event.detail, 'restore');
   }
 
   function openRestore(event: CustomEvent<RestoreTarget>) {
@@ -273,6 +312,7 @@
       {destinations}
       job={sendJob}
       jobError={sendError}
+      retry={pollFailed ? retryStatus : null}
       {starting}
       {cancelling}
       allowed={drAck}
@@ -293,8 +333,9 @@
       datasets={sendableDatasets}
       job={chainJob}
       {jobError}
+      retry={pollFailed ? retryStatus : null}
       {cancelling}
-      on:started={jobStarted}
+      on:started={verifyStarted}
       on:restore={openRestore}
       on:cancel={cancelJob}
     />
@@ -315,7 +356,7 @@
       source={restoreTarget.source}
       chain={restoreTarget.chain}
       {datasets}
-      on:started={jobStarted}
+      on:started={restoreStarted}
       on:close={() => (restoreTarget = null)}
     />
   {/if}

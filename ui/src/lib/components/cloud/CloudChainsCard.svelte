@@ -16,6 +16,8 @@
   /** The restore/verify job the page is polling, if any. */
   export let job: CloudJob | null = null;
   export let jobError = '';
+  /** Restart polling when the last status fetch failed; null while healthy. */
+  export let retry: (() => void) | null = null;
   export let cancelling = false;
 
   const dispatch = createEventDispatcher<{
@@ -43,14 +45,19 @@
   }
 
   async function list() {
-    if (!destination || !source.trim()) return;
+    // Freeze the pair the request is made for: the inputs stay editable while
+    // the request is in flight, and verify/restore must act on what was listed,
+    // not on whatever the form shows when the response arrives.
+    const dest = destination;
+    const src = source.trim();
+    if (!dest || !src) return;
     loading = true;
     listError = '';
-    const q = new URLSearchParams({ destination, source: source.trim() });
+    const q = new URLSearchParams({ destination: dest, source: src });
     try {
       const data = await api<{ chains?: Chain[] }>(`/api/cloud/chains?${q}`);
       chains = Array.isArray(data.chains) ? [...data.chains].sort((a, b) => a.sequence - b.sequence) : [];
-      listed = { destination, source: source.trim() };
+      listed = { destination: dest, source: src };
     } catch (e) {
       chains = [];
       listed = null;
@@ -188,7 +195,12 @@
     <p role="alert" class="mt-2 text-sm text-red-300">{verifyError}</p>
   {/if}
   {#if jobError}
-    <p role="alert" class="mt-2 text-sm text-red-300">{jobError}</p>
+    <div class="mt-2 flex flex-wrap items-center gap-2">
+      <p role="alert" class="text-sm text-red-300">{jobError}</p>
+      {#if retry}
+        <Button size="sm" variant="secondary" on:click={retry}>Retry status</Button>
+      {/if}
+    </div>
   {/if}
   {#if job}
     <CloudJobStatus {job} label={job.kind === 'restore' ? 'Restore progress' : 'Verify progress'} {cancelling} on:cancel={() => dispatch('cancel')} />
