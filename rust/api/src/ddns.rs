@@ -909,9 +909,9 @@ impl Manager {
                 let target = keys_copy.ok_or_else(|| "keys copy disappeared".to_string())?;
                 // A differing value means the keys copy is newer (every write
                 // after the upgrade targets it), so only a missing key blocks
-                // the delete. Saving the entry cannot fix a missing key, since
-                // the write path only knows the keys namespace; re-enter the
-                // old value or delete the apps copy by hand.
+                // the delete. The write path cannot read the apps copy, so the
+                // operator must supply the missing field; saving the entry then
+                // adds it to the keys copy and the next start finishes the move.
                 keys_copy_covers_source(&source, &target).map_err(|e| {
                     format!(
                         "keeping the apps-namespace copy: the keys-namespace Secret is missing \
