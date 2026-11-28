@@ -711,8 +711,15 @@ error instead of writing damaged data. The Rust buddy suite in
 - **Schedules force a periodic full.** Every schedule carries `fullEvery`
   (default 30, `0` disables); on the Nth run the send is forced full, which
   starts a new lineage and lets the receiver's retention reclaim the old one.
-  The counter (`sendsSinceFull`) resets after a forced full, and an older
+  A forced full only happens when the schedule also sets `pruneKeep` > 0, since
+  without retention the old lineage would accumulate; the forced full still
+  passes the normal truncation/content checks (only a manual `force` skips
+  them). The counter (`sendsSinceFull`) resets after a forced full, and an older
   schedule file without the field loads with the default.
+- **Interrupted pushes are reclaimed.** A chain directory with no published
+  manifest (a cancelled or crashed push) has no `toGUID`, so nothing can descend
+  from it; a prune deletes it unconditionally rather than letting its chunks
+  occupy quota forever.
 - **A send refuses a dataset the node cannot see.** `zfs send` runs in the host's
   mount namespace; a dataset created from inside a pod is mounted in that pod's
   namespace only, so sending it would capture an empty filesystem and still report

@@ -370,6 +370,12 @@ pub async fn run_due_schedules(state: &Arc<AppState>, now: DateTime<Utc>) {
     }
 }
 
+/// Whether this fire must force a full send. Retention must be enabled, or
+/// the new full would accumulate beside the old lineage forever.
+fn force_full_due(entry: &ScheduleEntry) -> bool {
+    entry.prune_keep > 0 && entry.full_every > 0 && entry.sends_since_full + 1 >= entry.full_every
+}
+
 async fn start_schedule_job(state: &Arc<AppState>, entry: ScheduleEntry) {
     let Some(agent) = state.agent.clone() else {
         tracing::warn!("buddy scheduler: skipping {}: no agent client", entry.id);
@@ -383,9 +389,7 @@ async fn start_schedule_job(state: &Arc<AppState>, entry: ScheduleEntry) {
     if receivers.is_empty() {
         return;
     }
-    // Force a full send on every Nth fire so an endless incremental lineage
-    // is rebased; the counter is per schedule, not per receiver.
-    let force = entry.full_every > 0 && entry.sends_since_full + 1 >= entry.full_every;
+    let force = force_full_due(&entry);
     let mut started = 0;
     for receiver in receivers {
         if let Some(conflict) = state.buddy_jobs.conflicting(&receiver, &entry.source) {
@@ -485,12 +489,23 @@ mod tests {
                 ..Default::default()
             })
             .unwrap();
-        let force_now = |count: usize| count + 1 >= 3;
-        assert!(!force_now(store.get("s1").unwrap().sends_since_full));
+        let mut entry = store.get("s1").unwrap();
+        // Retention disabled: never force, even on the Nth run.
+        entry.prune_keep = 0;
+        entry.sends_since_full = 2;
+        assert!(!force_full_due(&entry));
+        entry.prune_keep = 5;
+        assert!(force_full_due(&entry));
+        entry.sends_since_full = 0;
+        assert!(!force_full_due(&entry));
         store.record_sends("s1", false);
-        assert!(!force_now(store.get("s1").unwrap().sends_since_full));
+        entry = store.get("s1").unwrap();
+        entry.prune_keep = 5;
+        assert!(!force_full_due(&entry));
         store.record_sends("s1", false);
-        assert!(force_now(store.get("s1").unwrap().sends_since_full));
+        entry = store.get("s1").unwrap();
+        entry.prune_keep = 5;
+        assert!(force_full_due(&entry));
         store.record_sends("s1", true);
         assert_eq!(store.get("s1").unwrap().sends_since_full, 0);
     }

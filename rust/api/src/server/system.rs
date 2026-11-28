@@ -760,15 +760,9 @@ mod tests {
             .remember_running_for_test("tank/src", "tank/dst");
     }
 
-    /// The restore flight set is process-wide, so its tests must not overlap.
-    fn restore_lock() -> &'static tokio::sync::Mutex<()> {
-        static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-        &LOCK
-    }
-
     #[tokio::test]
     async fn reboot_refuses_while_a_replication_job_is_running() {
-        let _guard = restore_lock().lock().await;
+        let _guard = super::super::buddy_restore::test_lock().await;
         let state = Arc::new(AppState::for_test("test-secret"));
         running_replication(&state);
         assert_eq!(reboot(state).await.status(), StatusCode::CONFLICT);
@@ -776,7 +770,7 @@ mod tests {
 
     #[tokio::test]
     async fn reboot_allows_after_the_replication_job_finished() {
-        let _guard = restore_lock().lock().await;
+        let _guard = super::super::buddy_restore::test_lock().await;
         let state = Arc::new(AppState::for_test("test-secret"));
         state
             .replication_jobs
@@ -786,7 +780,7 @@ mod tests {
 
     #[tokio::test]
     async fn reboot_refuses_while_a_buddy_restore_is_running() {
-        let _guard = restore_lock().lock().await;
+        let _guard = super::super::buddy_restore::test_lock().await;
         let state = Arc::new(AppState::for_test("test-secret"));
         let _flight = super::super::buddy_restore::RestoreFlight::acquire("tank/src")
             .expect("restore acquires");
@@ -795,7 +789,7 @@ mod tests {
 
     #[tokio::test]
     async fn reboot_allows_after_the_buddy_restore_finished() {
-        let _guard = restore_lock().lock().await;
+        let _guard = super::super::buddy_restore::test_lock().await;
         let state = Arc::new(AppState::for_test("test-secret"));
         drop(
             super::super::buddy_restore::RestoreFlight::acquire("tank/src")
@@ -806,7 +800,7 @@ mod tests {
 
     #[tokio::test]
     async fn upgrade_refuses_while_a_replication_job_is_running() {
-        let _guard = restore_lock().lock().await;
+        let _guard = super::super::buddy_restore::test_lock().await;
         let state = Arc::new(AppState::for_test("test-secret"));
         running_replication(&state);
         assert_eq!(upgrade(state).await.status(), StatusCode::CONFLICT);
@@ -814,7 +808,7 @@ mod tests {
 
     #[tokio::test]
     async fn upgrade_allows_after_the_replication_job_finished() {
-        let _guard = restore_lock().lock().await;
+        let _guard = super::super::buddy_restore::test_lock().await;
         let state = Arc::new(AppState::for_test("test-secret"));
         state
             .replication_jobs
@@ -824,7 +818,7 @@ mod tests {
 
     #[tokio::test]
     async fn upgrade_refuses_while_a_buddy_restore_is_running() {
-        let _guard = restore_lock().lock().await;
+        let _guard = super::super::buddy_restore::test_lock().await;
         let state = Arc::new(AppState::for_test("test-secret"));
         let _flight = super::super::buddy_restore::RestoreFlight::acquire("tank/src")
             .expect("restore acquires");
@@ -833,7 +827,7 @@ mod tests {
 
     #[tokio::test]
     async fn upgrade_allows_after_the_buddy_restore_finished() {
-        let _guard = restore_lock().lock().await;
+        let _guard = super::super::buddy_restore::test_lock().await;
         let state = Arc::new(AppState::for_test("test-secret"));
         drop(
             super::super::buddy_restore::RestoreFlight::acquire("tank/src")

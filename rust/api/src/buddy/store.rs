@@ -833,6 +833,7 @@ impl Store {
                 from_guid: String::new(),
                 to_guid: String::new(),
                 incremental: true,
+                published: false,
             };
             if let Ok(raw) = std::fs::read(entry.path().join("manifest.json")) {
                 if let Ok(m) = serde_json::from_slice::<Manifest>(&raw) {
@@ -840,6 +841,7 @@ impl Store {
                     info.from_guid = m.from_guid;
                     info.to_guid = m.to_guid;
                     info.incremental = !m.from_snapshot.is_empty();
+                    info.published = true;
                 }
             }
             chains.push(info);
@@ -871,7 +873,7 @@ impl Store {
             self.invalidate_usage(key_id);
             let mut links = HashMap::new();
             for chain in &chains {
-                if chain.to_guid.is_empty() || doomed.contains(&chain.name) {
+                if !chain.published || chain.to_guid.is_empty() || doomed.contains(&chain.name) {
                     continue;
                 }
                 if chains_dir.join(&chain.name).exists() {
@@ -893,6 +895,10 @@ pub struct StoredChain {
     pub to_guid: String,
     /// A full send (no base) rather than a piece of an incremental chain.
     pub incremental: bool,
+    /// A manifest was published. An interrupted push leaves an unpublished
+    /// chain directory; nothing can descend from it, so it is always safe to
+    /// reclaim.
+    pub published: bool,
 }
 
 /// Delete a chain's manifest first, then its chunks, so a crash at any point
@@ -928,7 +934,15 @@ fn delete_chain_files(dir: &Path) -> bool {
 /// - a doomed lineage is deleted whole, newest link first.
 pub fn lineage_prune_plan(chains: &[StoredChain], current_chain: &str, keep: usize) -> Vec<String> {
     let keep = keep.max(1);
-    let mut order: Vec<&StoredChain> = chains.iter().collect();
+    // Unpublished chains (an interrupted push) have no manifest, so no chain
+    // can descend from them: they are always reclaimable and never form a
+    // lineage that could protect anything.
+    let mut out: Vec<String> = chains
+        .iter()
+        .filter(|c| !c.published)
+        .map(|c| c.name.clone())
+        .collect();
+    let mut order: Vec<&StoredChain> = chains.iter().filter(|c| c.published).collect();
     order.sort_by_key(|c| c.created_at);
     let mut lineages: Vec<Vec<&StoredChain>> = Vec::new();
     let mut tip_lineage: HashMap<&str, usize> = HashMap::new();
@@ -987,7 +1001,6 @@ pub fn lineage_prune_plan(chains: &[StoredChain], current_chain: &str, keep: usi
         }
         newer_has_full |= lineage.has_full;
     }
-    let mut out = Vec::new();
     for index in doomed {
         let mut chains = metas[index].chains.clone();
         chains.sort_by_key(|c| std::cmp::Reverse(c.created_at));
@@ -1833,7 +1846,25 @@ mod tests {
             from_guid: from_guid.into(),
             to_guid: to_guid.into(),
             incremental,
+            published: true,
         }
+    }
+
+    #[test]
+    fn an_unpublished_chain_is_reclaimed_without_touching_a_lineage() {
+        let mut unpublished = stored_chain("partial", 60, "", "", true);
+        unpublished.published = false;
+        let chains = vec![
+            stored_chain("a", 10, "", "a", false),
+            stored_chain("a2", 20, "a", "a2", true),
+            unpublished,
+        ];
+        // The interrupted push is deleted even though the single lineage is
+        // retained whole (keep=1 and it is the only published lineage).
+        assert_eq!(
+            lineage_prune_plan(&chains, "a2", 1),
+            vec!["partial".to_string()]
+        );
     }
 
     #[test]

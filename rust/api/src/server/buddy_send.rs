@@ -276,40 +276,67 @@ fn send_state_path(receiver: &str, source: &str) -> std::path::PathBuf {
         .join(format!("{name}.json"))
 }
 
-/// The newest GUID this instance published to `receiver` for `source`. Kept
-/// locally so a send to another receiver can protect this receiver's
-/// incremental base without a network call to it.
-fn anchor_path(receiver: &str, source: &str) -> std::path::PathBuf {
+/// The newest GUID this instance published to `receiver` for `source` and
+/// `dataset`. Kept locally so a send to another receiver can protect this
+/// receiver's incremental base without a network call to it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct SendAnchor {
+    receiver: String,
+    source: String,
+    dataset: String,
+    guid: String,
+}
+
+fn anchors_dir() -> std::path::PathBuf {
+    state_base_dir().join("buddy-anchors")
+}
+
+fn anchor_path(receiver: &str, source: &str, dataset: &str) -> std::path::PathBuf {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
-    h.update(format!("{receiver}|{source}").as_bytes());
+    h.update(format!("{receiver}|{source}|{dataset}").as_bytes());
     let digest = h.finalize();
     let name: String = digest[..16].iter().map(|b| format!("{b:02x}")).collect();
-    state_base_dir()
-        .join("buddy-anchors")
-        .join(format!("{name}.guid"))
+    anchors_dir().join(format!("{name}.json"))
 }
 
-fn read_anchor(receiver: &str, source: &str) -> Option<String> {
-    let raw = std::fs::read_to_string(anchor_path(receiver, source)).ok()?;
-    let guid = raw.trim().to_string();
-    (!guid.is_empty()).then_some(guid)
-}
-
-fn save_anchor(receiver: &str, source: &str, guid: &str) -> Result<(), String> {
+fn save_anchor(receiver: &str, source: &str, dataset: &str, guid: &str) -> Result<(), String> {
     if guid.is_empty() {
         return Ok(());
     }
-    let path = anchor_path(receiver, source);
+    let path = anchor_path(receiver, source, dataset);
+    let anchor = SendAnchor {
+        receiver: receiver.to_string(),
+        source: source.to_string(),
+        dataset: dataset.to_string(),
+        guid: guid.to_string(),
+    };
+    let data = serde_json::to_vec_pretty(&anchor).map_err(|e| e.to_string())?;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    crate::chartsrepo::write_atomic(
-        &path.display().to_string(),
-        format!("{guid}\n").as_bytes(),
-        0o600,
-        0o700,
-    )
+    crate::chartsrepo::write_atomic(&path.display().to_string(), &data, 0o600, 0o700)
+}
+
+/// Every receiver anchor recorded for `dataset` under `source`, so a receiver
+/// used only by an ad-hoc send is still discoverable without a schedule.
+fn anchors_for_dataset(dataset: &str, source: &str) -> Vec<SendAnchor> {
+    let entries = match std::fs::read_dir(anchors_dir()) {
+        Ok(entries) => entries,
+        Err(_) => return Vec::new(),
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            if !entry.file_name().to_string_lossy().ends_with(".json") {
+                return None;
+            }
+            let raw = std::fs::read(entry.path()).ok()?;
+            let anchor: SendAnchor = serde_json::from_slice(&raw).ok()?;
+            (anchor.dataset == dataset && anchor.source == source && !anchor.guid.is_empty())
+                .then_some(anchor)
+        })
+        .collect()
 }
 
 fn random_suffix() -> String {
@@ -620,7 +647,9 @@ async fn run_send_job(
             pushed.plain_bytes,
             !base.is_empty(),
             expected,
-            force,
+            // A schedule's forced full must still prove it carried the data;
+            // only an operator's explicit manual force may skip the checks.
+            force && schedule_id.is_empty(),
         )
     };
 
@@ -660,13 +689,13 @@ async fn run_send_job(
 
     // Record the newest published GUID per receiver so a later send to a
     // different buddy can protect this receiver's incremental base.
-    if let Err(e) = save_anchor(&receiver, &source, &target_guid) {
+    if let Err(e) = save_anchor(&receiver, &source, &dataset, &target_guid) {
         tracing::warn!("buddy send: cannot record the {receiver} anchor: {e}");
     }
     // Keep one Buddy snapshot by default (the base for the next incremental)
     // and honour the caller's retention; older ones leaked forever (R-059).
     // Every other receiver's base is protected from this prune.
-    let protected = protected_guids(&state, &dataset, &source, &receiver, &target_guid);
+    let protected = protected_guids(&dataset, &source, &receiver, &target_guid);
     prune_buddy_snapshots(&agent, &dataset, prune_keep, &protected).await;
 
     let res = SendResult {
@@ -763,46 +792,39 @@ fn prune_plan_buddy(
         .collect()
 }
 
-/// Every receiver this dataset is backed up to: the one being sent to now and
-/// the other buddies named by schedules for this dataset.
-fn dataset_receivers(state: &AppState, dataset: &str, current: &str) -> Vec<String> {
-    let mut seen = HashSet::new();
-    let mut out = Vec::new();
-    if seen.insert(current.to_string()) {
-        out.push(current.to_string());
-    }
-    for entry in state.buddy_schedules.list() {
-        if entry.dataset != dataset {
-            continue;
-        }
-        for receiver in entry.receiver_list() {
-            if seen.insert(receiver.clone()) {
-                out.push(receiver);
-            }
-        }
-    }
-    out
-}
-
 /// The GUIDs that must survive pruning: every receiver's newest published
-/// `to_guid`, from this send's target or the locally persisted anchor. No
-/// network call is made to the other receivers.
+/// `to_guid` for this dataset, from the locally persisted anchors (scheduled
+/// or ad-hoc) plus this send's own target. No network call is made to another
+/// receiver.
 fn protected_guids(
-    state: &AppState,
     dataset: &str,
     source: &str,
     current_receiver: &str,
     current_guid: &str,
 ) -> HashSet<String> {
+    protected_from(
+        current_receiver,
+        current_guid,
+        &anchors_for_dataset(dataset, source),
+    )
+}
+
+/// The protected set from already-loaded anchor records: every other
+/// receiver's newest published GUID plus this send's own target.
+fn protected_from(
+    current_receiver: &str,
+    current_guid: &str,
+    anchors: &[SendAnchor],
+) -> HashSet<String> {
     let mut protected = HashSet::new();
-    for receiver in dataset_receivers(state, dataset, current_receiver) {
-        if receiver == current_receiver {
-            if !current_guid.is_empty() {
-                protected.insert(current_guid.to_string());
-            }
-        } else if let Some(guid) = read_anchor(&receiver, source) {
-            protected.insert(guid);
+    if !current_guid.is_empty() {
+        protected.insert(current_guid.to_string());
+    }
+    for anchor in anchors {
+        if anchor.receiver == current_receiver {
+            continue;
         }
+        protected.insert(anchor.guid.clone());
     }
     protected
 }
@@ -1051,8 +1073,8 @@ const _: Duration = Duration::from_secs(0);
 #[cfg(test)]
 mod tests {
     use super::{
-        prune_plan_buddy, require_publish_evidence, require_stream_matches_dataset,
-        send_shortfall_allowance,
+        anchor_path, protected_from, prune_plan_buddy, require_publish_evidence,
+        require_stream_matches_dataset, send_shortfall_allowance, SendAnchor,
     };
     use std::collections::HashSet;
 
@@ -1103,6 +1125,44 @@ mod tests {
             assert_ne!(name, "buddy-1");
             assert_ne!(name, "buddy-2");
         }
+    }
+
+    #[test]
+    fn an_anchor_is_per_receiver_source_and_dataset() {
+        let base = anchor_path("https://a", "naslos-a/tank", "tank");
+        assert_eq!(base, anchor_path("https://a", "naslos-a/tank", "tank"));
+        assert_ne!(base, anchor_path("https://b", "naslos-a/tank", "tank"));
+        assert_ne!(base, anchor_path("https://a", "naslos-a/other", "tank"));
+        // Reusing one source for a parent and a child dataset must not share
+        // an anchor, or the later send overwrites the other's base.
+        assert_ne!(
+            base,
+            anchor_path("https://a", "naslos-a/tank", "tank/child")
+        );
+    }
+
+    #[test]
+    fn every_receivers_anchor_protects_its_guid_but_not_this_sends() {
+        let anchors = vec![
+            SendAnchor {
+                receiver: "https://a".into(),
+                source: "naslos-a/tank".into(),
+                dataset: "tank".into(),
+                guid: "guid-a".into(),
+            },
+            SendAnchor {
+                receiver: "https://b".into(),
+                source: "naslos-a/tank".into(),
+                dataset: "tank".into(),
+                guid: "guid-b".into(),
+            },
+        ];
+        let protected = protected_from("https://a", "guid-a-new", &anchors);
+        assert!(protected.contains("guid-a-new"));
+        assert!(protected.contains("guid-b"));
+        // This send's receiver contributes only its new target, not its old
+        // anchor: the old one may be pruned once it is unprotected.
+        assert!(!protected.contains("guid-a"));
     }
 
     #[test]

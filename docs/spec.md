@@ -1765,7 +1765,8 @@ See `docs/buddy-backup.md`.
   `buddy::store::tests::an_endless_incremental_lineage_is_kept_whole`,
   `buddy::store::tests::an_incremental_whose_base_is_gone_never_protects_a_lineage`,
   `buddy::store::tests::a_duplicate_full_starts_a_new_lineage`,
-  `buddy::store::tests::a_prune_deletes_the_manifest_before_the_chunks`)*
+  `buddy::store::tests::a_prune_deletes_the_manifest_before_the_chunks`,
+  `buddy::store::tests::an_unpublished_chain_is_reclaimed_without_touching_a_lineage`)*
 - **FR-BUD-10** — Unknown keys, unsigned requests, stale timestamps, replayed
   requests, out-of-scope sources, tampered chunks and tampered manifests MUST each
   fail with an explicit error; a restore MUST never write unverified data.
@@ -1800,9 +1801,12 @@ See `docs/buddy-backup.md`.
   MUST apply the entry's retention (`pruneKeep`) on success and MUST notify via
   ntfy on success (`backup_success`) and on failure (`backup_failure`), gated on the
   notification settings' enabled events. A schedule MUST force a full send every
-  `fullEvery` runs (default 30, 0 disables) so an endless incremental lineage is
-  periodically rebased onto a fresh full; the counter resets after each forced
-  full and a schedule file without the field loads with the default. *(tests:
+  `fullEvery` runs (default 30, 0 disables) when retention is enabled
+  (`pruneKeep` > 0), so an endless incremental lineage is periodically rebased
+  onto a fresh full that the receiver can reclaim; the counter resets after each
+  forced full and a schedule file without the field loads with the default. A
+  scheduled forced full MUST still pass the normal publish evidence checks (an
+  operator's explicit manual `force` is the only path that skips them). *(tests:
   `server::buddy_schedules::tests::an_old_schedule_file_loads_with_full_every_defaulting_to_30`,
   `server::buddy_schedules::tests::full_every_is_configurable_and_round_trips`,
   `server::buddy_schedules::tests::a_full_is_forced_on_the_nth_send_and_the_counter_resets`)*
@@ -1837,10 +1841,14 @@ See `docs/buddy-backup.md`.
   receiver in a schedule for it), each contributing its newest published
   `toGUID` from the locally persisted per-receiver anchor, and the keep count
   applies only to the unprotected rest. No network call to another receiver is
-  made. *(tests:
+  made. The anchor is persisted per receiver, source and dataset, and the
+  anchors directory is enumerated so an ad-hoc send's receiver is protected
+  too. *(tests:
   `server::buddy_send::tests::two_receivers_with_different_bases_both_survive`,
   `server::buddy_send::tests::keep_n_prunes_only_old_unprotected_snapshots`,
-  `server::buddy_send::tests::a_snapshot_with_an_empty_guid_is_prunable`)*
+  `server::buddy_send::tests::a_snapshot_with_an_empty_guid_is_prunable`,
+  `server::buddy_send::tests::an_anchor_is_per_receiver_source_and_dataset`,
+  `server::buddy_send::tests::every_receivers_anchor_protects_its_guid_but_not_this_sends`)*
 - **FR-BUD-21** — The signed manifest's `createdAt` MUST be canonicalized to
   millisecond precision before signing and verification, so a Rust and a Go
   implementation produce identical signed bytes for the same timestamp.
