@@ -33,12 +33,28 @@ fn active_restores() -> &'static Mutex<HashSet<String>> {
     ACTIVE.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
+/// Tests in any module that assert on the process-wide flight set must hold
+/// this lock, so one test cannot observe another test's flight.
+#[cfg(test)]
+pub(crate) async fn test_lock() -> tokio::sync::MutexGuard<'static, ()> {
+    static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    LOCK.lock().await
+}
+
 /// Releases the per-dataset restore slot on every exit path.
 pub(crate) struct RestoreFlight {
     dataset: String,
 }
 
 impl RestoreFlight {
+    /// True while any synchronous restore is in flight.
+    pub(crate) fn any_in_flight() -> bool {
+        match active_restores().lock() {
+            Ok(guard) => !guard.is_empty(),
+            Err(poisoned) => !poisoned.into_inner().is_empty(),
+        }
+    }
+
     /// `None` when a restore of this dataset is already in progress.
     pub(crate) fn acquire(dataset: &str) -> Option<Self> {
         let mut active = match active_restores().lock() {
@@ -953,8 +969,9 @@ mod tests {
         assert!(raw.contains("appliedChains"), "{raw}");
     }
 
-    #[test]
-    fn a_second_restore_of_the_same_dataset_is_refused_until_the_first_finishes() {
+    #[tokio::test]
+    async fn a_second_restore_of_the_same_dataset_is_refused_until_the_first_finishes() {
+        let _guard = super::test_lock().await;
         let first = RestoreFlight::acquire("test/single-flight").expect("first restore acquires");
         assert!(
             RestoreFlight::acquire("test/single-flight").is_none(),

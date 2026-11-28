@@ -231,7 +231,7 @@ that rewrites the path — an error nobody can debug otherwise.
 | PUT | `/chunks/{source}?chain=&index=` | Upload one sealed chunk (idempotent) |
 | GET | `/manifest/{source}?chain=` | A manifest (`chain` omitted = current chain) |
 | PUT | `/manifest/{source}` | Publish a signed manifest; refused unless every chunk it lists is present |
-| POST | `/prune/{source}` | `{"keep": N}` — keep the newest N chains, delete the rest. Never deletes a chain the newest one descends from: an incremental without its base is not a backup, so a keep-count may retain more chains than asked |
+| POST | `/prune/{source}` | `{"keep": N}` — keep the newest N **lineages**, delete the rest. A lineage is a full chain plus its GUID-contiguous incrementals; the lineage holding the newest chain is always kept, and a lineage is deletable only when a newer lineage has a published full. Whole lineages are deleted newest-link first, manifest before chunks, so an incremental never loses its base and a keep-count may retain more chains than asked |
 
 The index travels as a **query parameter** rather than a path segment because a
 source can itself contain slashes (`naslos-a/tank/data`); guessing where the source
@@ -579,7 +579,12 @@ What the send does, in order:
    sends in the same second would otherwise collide). After a successful publish it
    keeps the newest Buddy snapshot (the base for the next incremental) plus the
    job's `pruneKeep` older ones, and destroys the rest, so repeated sends do not
-   leak snapshots.
+   leak snapshots. A snapshot that is another receiver's base is **never**
+   destroyed: the protected set is every receiver this dataset is sent to (the
+   current one plus each receiver in a schedule for it), each contributing its
+   newest published `toGUID` from the locally persisted per-receiver anchor. A
+   fan-out schedule to A and B therefore cannot destroy B's incremental base while
+   sending to A.
 3. Asks the node for a dry-run size (`zfs send -nP`), streams the send, encrypts and
    uploads it, and only then publishes the signed manifest.
 4. If the stream came in short of that estimate by more than the allowance, **no
@@ -695,12 +700,37 @@ error instead of writing damaged data. The Rust buddy suite in
   verifies restores. A schedule file that cannot be parsed is preserved as
   `BUDDY_SCHEDULES.corrupt-<epoch>` and mutations are refused until it is
   repaired, so a corrupt store is never silently replaced with an empty one.
-- **Retention never breaks a sequence.** `pruneKeep` counts *chains*, but an
-  incremental chain needs every chain below it, so the receiver always keeps the
-  dependency chain of the newest backup. Asking for `keep=1` on an incremental
-  therefore keeps the incremental **and** its base; that is deliberate, because the
+- **Retention never breaks a sequence.** `pruneKeep` counts *lineages*, not
+  chains: a lineage is a full plus its GUID-contiguous incrementals, and it is
+  deleted whole (newest link first, manifest before chunks) only when a newer
+  lineage has a published full. Asking for `keep=1` on an endless incremental
+  lineage therefore keeps it **whole**; that is deliberate, because the
   alternative is a backup that verifies as unrestorable long after the schedule
-  reported success.
+  reported success. A duplicate forced full starts a new lineage, so the old one
+  becomes deletable once the new full is published.
+- **Schedules force a periodic full.** Every schedule carries `fullEvery`
+  (default 30, `0` disables); on the Nth run the send is forced full, which
+  starts a new lineage and lets the receiver's retention reclaim the old one.
+  A forced full only happens when the schedule also sets `pruneKeep` > 0, since
+  without retention the old lineage would accumulate; the forced full still
+  passes the normal truncation/content checks. A manual `force` only bypasses
+  the two "evidence unavailable" refusals (the agent cannot estimate the send,
+  or the dataset's used space cannot be read); the shortfall check always runs
+  and the content check still runs whenever `used` is available. The counter
+  (`sendsSinceFull`) resets after a forced full, and an older schedule file
+  without the field loads with the default.
+- **Interrupted pushes are reclaimed.** A chain directory with no
+  `manifest.json` (a cancelled or crashed push) has no `toGUID`, so nothing can
+  descend from it; a prune deletes it once it has been untouched for 24 h
+  (`UNPUBLISHED_CHAIN_GRACE`), so a live upload streaming into a fresh chain is
+  never deleted mid-flight. A manifest that exists but cannot be read or parsed
+  is treated as published and kept: a transient read error must never destroy a
+  restorable backup.
+- **Anchors expire.** The per-receiver anchor that protects a sender's
+  incremental base is honoured for 30 days (`ANCHOR_RETENTION`) after the last
+  successful send, so a retired receiver or a changed URL cannot pin a source
+  snapshot forever. An anchor written before the `updatedAt` field existed uses
+  its file mtime (rewritten on every successful send) as that timestamp.
 - **A send refuses a dataset the node cannot see.** `zfs send` runs in the host's
   mount namespace; a dataset created from inside a pod is mounted in that pod's
   namespace only, so sending it would capture an empty filesystem and still report

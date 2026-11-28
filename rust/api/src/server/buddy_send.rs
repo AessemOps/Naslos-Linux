@@ -5,6 +5,7 @@
 //! disconnected operator cannot kill the transfer; the resume-state file makes a
 //! cancelled or killed send continue the same chain.
 
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -273,6 +274,96 @@ fn send_state_path(receiver: &str, source: &str) -> std::path::PathBuf {
     state_base_dir()
         .join("buddy-sends")
         .join(format!("{name}.json"))
+}
+
+/// The newest GUID this instance published to `receiver` for `source` and
+/// `dataset`. Kept locally so a send to another receiver can protect this
+/// receiver's incremental base without a network call to it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct SendAnchor {
+    receiver: String,
+    source: String,
+    dataset: String,
+    guid: String,
+    /// When this send last published to the receiver. An anchor older than
+    /// `ANCHOR_RETENTION` is expired, so a retired receiver cannot pin a
+    /// snapshot forever.
+    #[serde(default, rename = "updatedAt")]
+    updated_at: Option<DateTime<Utc>>,
+}
+
+/// How long an anchor keeps protecting its GUID. A receiver that has had no
+/// successful send for this long no longer holds a base worth protecting.
+pub(crate) const ANCHOR_RETENTION: chrono::Duration = chrono::Duration::days(30);
+
+fn anchors_dir() -> std::path::PathBuf {
+    state_base_dir().join("buddy-anchors")
+}
+
+fn anchor_path(receiver: &str, source: &str, dataset: &str) -> std::path::PathBuf {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(format!("{receiver}|{source}|{dataset}").as_bytes());
+    let digest = h.finalize();
+    let name: String = digest[..16].iter().map(|b| format!("{b:02x}")).collect();
+    anchors_dir().join(format!("{name}.json"))
+}
+
+fn save_anchor(receiver: &str, source: &str, dataset: &str, guid: &str) -> Result<(), String> {
+    if guid.is_empty() {
+        return Ok(());
+    }
+    let path = anchor_path(receiver, source, dataset);
+    let anchor = SendAnchor {
+        receiver: receiver.to_string(),
+        source: source.to_string(),
+        dataset: dataset.to_string(),
+        guid: guid.to_string(),
+        updated_at: Some(Utc::now()),
+    };
+    let data = serde_json::to_vec_pretty(&anchor).map_err(|e| e.to_string())?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    crate::chartsrepo::write_atomic(&path.display().to_string(), &data, 0o600, 0o700)
+}
+
+/// Every receiver anchor recorded for `dataset` under `source`, so a receiver
+/// used only by an ad-hoc send is still discoverable without a schedule.
+fn anchors_for_dataset(dataset: &str, source: &str) -> Vec<SendAnchor> {
+    anchors_for_dataset_at(dataset, source, Utc::now())
+}
+
+/// Anchors still inside `ANCHOR_RETENTION`; an old one is a retired receiver
+/// whose base is no longer worth pinning.
+fn anchors_for_dataset_at(dataset: &str, source: &str, now: DateTime<Utc>) -> Vec<SendAnchor> {
+    let entries = match std::fs::read_dir(anchors_dir()) {
+        Ok(entries) => entries,
+        Err(_) => return Vec::new(),
+    };
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            if !entry.file_name().to_string_lossy().ends_with(".json") {
+                return None;
+            }
+            let raw = std::fs::read(entry.path()).ok()?;
+            let anchor: SendAnchor = serde_json::from_slice(&raw).ok()?;
+            // A legacy record has no `updatedAt`; its file mtime is the last
+            // successful send because `save_anchor` rewrites it each time.
+            let modified = entry
+                .metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .map(DateTime::<Utc>::from);
+            let written = anchor_written_at(&anchor, modified);
+            (anchor_is_fresh(written, now)
+                && anchor.dataset == dataset
+                && anchor.source == source
+                && !anchor.guid.is_empty())
+            .then_some(anchor)
+        })
+        .collect()
 }
 
 fn random_suffix() -> String {
@@ -583,7 +674,9 @@ async fn run_send_job(
             pushed.plain_bytes,
             !base.is_empty(),
             expected,
-            force,
+            // A schedule's forced full must still prove it carried the data;
+            // only an operator's explicit manual force may skip the checks.
+            force && schedule_id.is_empty(),
         )
     };
 
@@ -621,9 +714,16 @@ async fn run_send_job(
     }
     let _ = std::fs::remove_file(&state_path);
 
+    // Record the newest published GUID per receiver so a later send to a
+    // different buddy can protect this receiver's incremental base.
+    if let Err(e) = save_anchor(&receiver, &source, &dataset, &target_guid) {
+        tracing::warn!("buddy send: cannot record the {receiver} anchor: {e}");
+    }
     // Keep one Buddy snapshot by default (the base for the next incremental)
     // and honour the caller's retention; older ones leaked forever (R-059).
-    prune_buddy_snapshots(&agent, &dataset, prune_keep).await;
+    // Every other receiver's base is protected from this prune.
+    let protected = protected_guids(&dataset, &source, &receiver, &target_guid);
+    prune_buddy_snapshots(&agent, &dataset, prune_keep, &protected).await;
 
     let res = SendResult {
         status: "backed up".to_string(),
@@ -668,40 +768,108 @@ async fn run_send_job(
     notify(&state, &job.snapshot()).await;
 }
 
-/// Destroy older `buddy-*` snapshots of `dataset`, keeping the newest `keep`
-/// (at least one, so the next incremental has a base).
-async fn prune_buddy_snapshots(agent: &crate::agent::Client, dataset: &str, keep: usize) {
+/// Destroy older `buddy-*` snapshots of `dataset`, never touching a snapshot
+/// that is another receiver's incremental base (`protected`). `keep` applies
+/// only to the unprotected rest, so a fan-out schedule to several buddies
+/// cannot destroy one buddy's base while sending to another.
+async fn prune_buddy_snapshots(
+    agent: &crate::agent::Client,
+    dataset: &str,
+    keep: usize,
+    protected: &HashSet<String>,
+) {
     let keep = keep.max(1);
-    let paths = match agent.snapshot_paths(dataset).await {
-        Ok(paths) => paths,
+    let snaps = match agent.snapshots_with_guid(dataset).await {
+        Ok(snaps) => snaps,
         Err(e) => {
             tracing::warn!("buddy send: cannot list snapshots of {dataset} for pruning: {e}");
             return;
         }
     };
-    for name in buddy_snapshots_to_prune(&paths, dataset, keep) {
+    let own: Vec<(String, String)> = snaps
+        .into_iter()
+        .filter(|s| s.dataset == dataset && s.name.starts_with("buddy-"))
+        .map(|s| (s.name, s.guid))
+        .collect();
+    for name in prune_plan_buddy(&own, protected, keep) {
         if let Err(e) = agent.destroy_snapshot(dataset, &name).await {
             tracing::warn!("buddy send: cannot destroy old snapshot {dataset}@{name}: {e}");
         }
     }
 }
 
-/// The oldest `buddy-*` snapshots of `dataset` beyond the newest `keep`, in
-/// creation order (as returned by the agent).
-fn buddy_snapshots_to_prune(paths: &[String], dataset: &str, keep: usize) -> Vec<String> {
-    let prefix = format!("{dataset}@");
-    let names: Vec<&str> = paths
+/// The `buddy-*` snapshots to destroy: protected GUIDs survive, and `keep`
+/// counts only the unprotected snapshots, newest last (creation order).
+fn prune_plan_buddy(
+    snapshots: &[(String, String)],
+    protected: &HashSet<String>,
+    keep: usize,
+) -> Vec<String> {
+    let keep = keep.max(1);
+    let unprotected: Vec<&(String, String)> = snapshots
         .iter()
-        .filter_map(|path| path.strip_prefix(&prefix))
-        .filter(|name| name.starts_with("buddy-"))
+        .filter(|(_, guid)| guid.is_empty() || !protected.contains(guid))
         .collect();
-    if names.len() <= keep {
+    if unprotected.len() <= keep {
         return Vec::new();
     }
-    names[..names.len() - keep]
+    unprotected[..unprotected.len() - keep]
         .iter()
-        .map(|name| (*name).to_string())
+        .map(|(name, _)| name.clone())
         .collect()
+}
+
+/// The GUIDs that must survive pruning: every receiver's newest published
+/// `to_guid` for this dataset, from the locally persisted anchors (scheduled
+/// or ad-hoc) plus this send's own target. No network call is made to another
+/// receiver.
+fn protected_guids(
+    dataset: &str,
+    source: &str,
+    current_receiver: &str,
+    current_guid: &str,
+) -> HashSet<String> {
+    protected_from(
+        current_receiver,
+        current_guid,
+        &anchors_for_dataset(dataset, source),
+    )
+}
+
+/// When an anchor was last written: its own `updatedAt`, or the file's mtime
+/// for a legacy record that predates the field.
+fn anchor_written_at(
+    anchor: &SendAnchor,
+    modified: Option<DateTime<Utc>>,
+) -> Option<DateTime<Utc>> {
+    anchor.updated_at.or(modified)
+}
+
+/// An anchor protects its GUID until `ANCHOR_RETENTION` passes without a
+/// successful send. The caller supplies the write time: the record's
+/// `updatedAt`, or the file mtime for a legacy record that predates the field.
+fn anchor_is_fresh(written: Option<DateTime<Utc>>, now: DateTime<Utc>) -> bool {
+    written.is_none_or(|updated| updated > now - ANCHOR_RETENTION)
+}
+
+/// The protected set from already-loaded anchor records: every other
+/// receiver's newest published GUID plus this send's own target.
+fn protected_from(
+    current_receiver: &str,
+    current_guid: &str,
+    anchors: &[SendAnchor],
+) -> HashSet<String> {
+    let mut protected = HashSet::new();
+    if !current_guid.is_empty() {
+        protected.insert(current_guid.to_string());
+    }
+    for anchor in anchors {
+        if anchor.receiver == current_receiver {
+            continue;
+        }
+        protected.insert(anchor.guid.clone());
+    }
+    protected
 }
 
 fn save_send_state(path: &std::path::Path, state: &InstanceSendState) -> Result<(), String> {
@@ -948,24 +1116,168 @@ const _: Duration = Duration::from_secs(0);
 #[cfg(test)]
 mod tests {
     use super::{
-        buddy_snapshots_to_prune, require_publish_evidence, require_stream_matches_dataset,
-        send_shortfall_allowance,
+        anchor_is_fresh, anchor_path, anchor_written_at, protected_from, prune_plan_buddy,
+        require_publish_evidence, require_stream_matches_dataset, send_shortfall_allowance,
+        SendAnchor, ANCHOR_RETENTION,
     };
+    use chrono::Utc;
+    use std::collections::HashSet;
+
+    fn snaps(entries: &[(&str, &str)]) -> Vec<(String, String)> {
+        entries
+            .iter()
+            .map(|(name, guid)| ((*name).to_string(), (*guid).to_string()))
+            .collect()
+    }
+
+    fn protected(guids: &[&str]) -> HashSet<String> {
+        guids.iter().map(|g| (*g).to_string()).collect()
+    }
 
     #[test]
-    fn only_old_buddy_snapshots_of_the_dataset_are_pruned() {
-        let paths = vec![
-            "tank/data@buddy-1".to_string(),
-            "tank/data@manual".to_string(),
-            "tank/data@buddy-2".to_string(),
-            "tank/other@buddy-3".to_string(),
-            "tank/data@buddy-4".to_string(),
-        ];
+    fn keep_n_prunes_only_old_unprotected_snapshots() {
+        let snapshots = snaps(&[
+            ("buddy-1", "g1"),
+            ("buddy-2", "g2"),
+            ("buddy-3", "g3"),
+            ("buddy-4", "g4"),
+        ]);
         assert_eq!(
-            buddy_snapshots_to_prune(&paths, "tank/data", 2),
+            prune_plan_buddy(&snapshots, &HashSet::new(), 2),
+            vec!["buddy-1".to_string(), "buddy-2".to_string()]
+        );
+        assert!(prune_plan_buddy(&snapshots, &HashSet::new(), 4).is_empty());
+    }
+
+    #[test]
+    fn two_receivers_with_different_bases_both_survive() {
+        // buddy-1 and buddy-2 are the incremental bases of two different
+        // receivers; buddy-3 and buddy-4 are this receiver's own history.
+        let snapshots = snaps(&[
+            ("buddy-1", "base-a"),
+            ("buddy-2", "base-b"),
+            ("buddy-3", "own-newer"),
+            ("buddy-4", "own-newest"),
+        ]);
+        let keep = protected(&["base-a", "base-b"]);
+        // keep=1 prunes the unprotected rest to one, not the other base.
+        assert_eq!(
+            prune_plan_buddy(&snapshots, &keep, 1),
+            vec!["buddy-3".to_string()]
+        );
+        // Even keep=0 (clamped to one) never destroys a protected base.
+        for name in prune_plan_buddy(&snapshots, &keep, 0) {
+            assert_ne!(name, "buddy-1");
+            assert_ne!(name, "buddy-2");
+        }
+    }
+
+    #[test]
+    fn an_anchor_is_per_receiver_source_and_dataset() {
+        let base = anchor_path("https://a", "naslos-a/tank", "tank");
+        assert_eq!(base, anchor_path("https://a", "naslos-a/tank", "tank"));
+        assert_ne!(base, anchor_path("https://b", "naslos-a/tank", "tank"));
+        assert_ne!(base, anchor_path("https://a", "naslos-a/other", "tank"));
+        // Reusing one source for a parent and a child dataset must not share
+        // an anchor, or the later send overwrites the other's base.
+        assert_ne!(
+            base,
+            anchor_path("https://a", "naslos-a/tank", "tank/child")
+        );
+    }
+
+    #[test]
+    fn a_retired_receiver_stops_pinning_after_the_anchor_retention() {
+        let now = Utc::now();
+        assert!(anchor_is_fresh(Some(now), now));
+        assert!(anchor_is_fresh(
+            Some(now - ANCHOR_RETENTION + chrono::Duration::days(1)),
+            now
+        ));
+        // A receiver not sent to for the whole window no longer pins a
+        // snapshot; the sender's own prune can reclaim it.
+        assert!(!anchor_is_fresh(
+            Some(now - ANCHOR_RETENTION - chrono::Duration::days(1)),
+            now
+        ));
+        // A legacy record has no `updatedAt`; the file mtime is used instead,
+        // so an old anchor still expires while a live one is kept.
+        let legacy = SendAnchor {
+            receiver: "https://retired".into(),
+            source: "naslos-a/tank".into(),
+            dataset: "tank".into(),
+            guid: "guid-old".into(),
+            updated_at: None,
+        };
+        assert_eq!(
+            anchor_written_at(&legacy, Some(now - chrono::Duration::days(1))),
+            Some(now - chrono::Duration::days(1))
+        );
+        assert!(anchor_is_fresh(
+            anchor_written_at(&legacy, Some(now - chrono::Duration::days(1))),
+            now
+        ));
+        assert!(!anchor_is_fresh(
+            anchor_written_at(
+                &legacy,
+                Some(now - ANCHOR_RETENTION - chrono::Duration::days(1))
+            ),
+            now
+        ));
+        // A newer record's own timestamp wins over a stale mtime.
+        let current = SendAnchor {
+            receiver: legacy.receiver.clone(),
+            source: legacy.source.clone(),
+            dataset: legacy.dataset.clone(),
+            guid: legacy.guid.clone(),
+            updated_at: Some(now),
+        };
+        assert_eq!(
+            anchor_written_at(
+                &current,
+                Some(now - ANCHOR_RETENTION - chrono::Duration::days(1))
+            ),
+            Some(now)
+        );
+        // Only a record with no timestamp and no mtime is treated as fresh
+        // rather than silently unprotecting a receiver.
+        assert!(anchor_is_fresh(anchor_written_at(&legacy, None), now));
+    }
+
+    #[test]
+    fn every_receivers_anchor_protects_its_guid_but_not_this_sends() {
+        let now = Utc::now();
+        let anchors = vec![
+            SendAnchor {
+                receiver: "https://a".into(),
+                source: "naslos-a/tank".into(),
+                dataset: "tank".into(),
+                guid: "guid-a".into(),
+                updated_at: Some(now),
+            },
+            SendAnchor {
+                receiver: "https://b".into(),
+                source: "naslos-a/tank".into(),
+                dataset: "tank".into(),
+                guid: "guid-b".into(),
+                updated_at: Some(now),
+            },
+        ];
+        let protected = protected_from("https://a", "guid-a-new", &anchors);
+        assert!(protected.contains("guid-a-new"));
+        assert!(protected.contains("guid-b"));
+        // This send's receiver contributes only its new target, not its old
+        // anchor: the old one may be pruned once it is unprotected.
+        assert!(!protected.contains("guid-a"));
+    }
+
+    #[test]
+    fn a_snapshot_with_an_empty_guid_is_prunable() {
+        let snapshots = snaps(&[("buddy-1", ""), ("buddy-2", ""), ("buddy-3", "base-a")]);
+        assert_eq!(
+            prune_plan_buddy(&snapshots, &protected(&["base-a"]), 1),
             vec!["buddy-1".to_string()]
         );
-        assert!(buddy_snapshots_to_prune(&paths, "tank/data", 5).is_empty());
     }
 
     #[test]

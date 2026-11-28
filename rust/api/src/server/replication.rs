@@ -311,6 +311,16 @@ impl ReplicationJobManager {
         Self::default()
     }
 
+    /// True while any streaming replication job is still writing.
+    pub fn has_running(&self) -> bool {
+        self.inner
+            .lock()
+            .unwrap()
+            .0
+            .values()
+            .any(|job| job.state() == JobState::Running)
+    }
+
     pub fn conflicting(&self, destination: &str) -> Option<JobPublic> {
         let inner = self.inner.lock().unwrap();
         for job in inner.0.values() {
