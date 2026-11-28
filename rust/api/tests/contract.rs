@@ -2076,6 +2076,7 @@ async fn config_export_requires_an_admin_and_emits_the_versioned_shape() {
     let ddns = naslos_api::ddns::Manager::new(naslos_api::ddns::Options {
         registry: st.providers.clone(),
         store_path: String::new(),
+        keys_namespace: "naslos-keys".into(),
         apps_namespace: "naslos-apps".into(),
         kube: None,
         ip_sources: Vec::new(),
@@ -2243,6 +2244,7 @@ fn test_ddns_manager(state: &AppState) -> naslos_api::ddns::Manager {
     naslos_api::ddns::Manager::new(naslos_api::ddns::Options {
         registry: state.providers.clone(),
         store_path: String::new(),
+        keys_namespace: "naslos-keys".into(),
         apps_namespace: "naslos-apps".into(),
         kube: None,
         ip_sources: Vec::new(),

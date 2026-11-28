@@ -682,6 +682,9 @@ fn build_ddns(
         registry: providers.clone(),
         store_path: std::env::var("DDNS_CONFIG")
             .unwrap_or_else(|_| "/var/lib/naslos/ddns.json".to_string()),
+        // FR-DNS-04: DDNS credentials live in the key-custody namespace, never
+        // the apps namespace (untrusted charts can read every Secret there).
+        keys_namespace: crate::ddns::keys_namespace(),
         apps_namespace: apps_namespace.to_string(),
         kube: kube.clone(),
         ip_sources,

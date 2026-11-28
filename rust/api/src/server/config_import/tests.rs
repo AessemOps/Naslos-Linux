@@ -73,6 +73,7 @@ fn ddns_manager(state: &AppState) -> ddns::Manager {
     ddns::Manager::new(ddns::Options {
         registry: state.providers.clone(),
         store_path: String::new(),
+        keys_namespace: "naslos-keys".into(),
         apps_namespace: "naslos-apps".into(),
         kube: None,
         ip_sources: Vec::new(),

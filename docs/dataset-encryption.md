@@ -109,6 +109,21 @@ Secrets. The chart instead gives the API CRUD on Secrets only in `naslos-keys`
 namespace carries `helm.sh/resource-policy: keep`: datasets live on the host, so
 deleting the keys on uninstall would destroy the data.
 
+The namespace is the platform's **key-custody** namespace and holds three
+classes of write-only credential that only the API consumes:
+
+| Prefix | What | Why it is here |
+| --- | --- | --- |
+| `naslos-dataset-key-` | 32-byte raw ZFS dataset keys | [dataset-encryption.md](dataset-encryption.md) |
+| `naslos-cloud-cred-` | S3 destination access keys | [cloud-backup.md](cloud-backup.md) |
+| `naslos-ddns-` | DDNS provider credentials | [dynamic-dns.md](dynamic-dns.md) |
+
+None of them may live in the apps namespace: user apps and arbitrary Helm
+charts run there and the Helm identity has `get`/`list` on Secrets in it, so a
+chart can `lookup` or mount any Secret beside it. Domain / cert-manager
+credentials are the exception and stay in the apps namespace, because the
+Issuer rendered there references them by name.
+
 ### Implemented shape
 
 - **Create:** the API validates the shape and refuses `keyformat=passphrase`

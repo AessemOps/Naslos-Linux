@@ -153,12 +153,13 @@ them.
 | Force a run | `POST /api/ddns/{id}/run` |
 
 The create/update body carries a `fields` map with every provider field. Secret
-fields are written to a Secret named `naslos-ddns-<id>` in the apps namespace
-(`naslos-apps`); the response returns the Secret name and which fields are set —
-**never their values**. An omitted secret field on update keeps the stored
-value; a secret field submitted explicitly **empty** is deleted from the
-Secret, so clearing a credential revokes it. This also removes a legacy
-credential key that older entries stored in `providerConfig`.
+fields are written to a Secret named `naslos-ddns-<id>` in the **key-custody
+namespace** (`datasetEncryption.keysNamespace`, default `naslos-keys`); the
+response returns the Secret name and which fields are set — **never their
+values**. An omitted secret field on update keeps the stored value; a secret
+field submitted explicitly **empty** is deleted from the Secret, so clearing a
+credential revokes it. This also removes a legacy credential key that older
+entries stored in `providerConfig`.
 
 - `record` is the subdomain label (`@` or empty for the apex).
 - `recordType` is `A` or `AAAA`.
@@ -166,23 +167,57 @@ credential key that older entries stored in `providerConfig`.
 
 ## Credential model
 
-- Credentials live in Kubernetes Secrets in the **apps namespace**, where the
-  API already has namespaced Secret CRUD for Helm releases.
+- Credentials live in Kubernetes Secrets in the **key-custody namespace**
+  (`datasetEncryption.keysNamespace`, default `naslos-keys`) — the same
+  workload-free namespace that holds dataset keys and cloud-destination
+  credentials. User apps and arbitrary Helm charts run in `naslos-apps` (and
+  the Helm identity has `get`/`list` on Secrets there), so a Secret beside them
+  can be read by `lookup` or mounted by any chart. DDNS credentials are only
+  ever read by the API itself, so they must not live there (FR-DNS-04).
+- Naslos writes `naslos-ddns-<id>` with
+  `app.kubernetes.io/managed-by=naslos-api` and
+  `naslos.io/ddns-entry=<id>`. Deleting an entry removes the Secret only when
+  it is one Naslos created (the managed label or the generated name); an
+  operator-provisioned Secret is left in place. An operator-supplied
+  `credentialsSecret` must be a DNS-1123 name starting with `naslos-` **and
+  already exist in the key-custody namespace**; it is written in place without
+  the managed labels, so it is never deleted with the entry.
+- No new RBAC is needed: the `naslos-dataset-keys` Role already grants the API
+  Secret `get/create/update/patch/delete` in that namespace (no `list`/`watch`,
+  which matches reading by name).
 - No Secret access is added in the release namespace, so the proxy secret, LDAP
   bind password and Authelia keys remain unreadable by the API (see the
   `naslos-api-platform-read` Role and its assertion in `scripts/audit.sh`).
 - App DNS records that point at a DDNS entry use the same state: a rename
   creates/updates the new CNAME first and deletes the old owned record
   afterwards; an adopted record is never owned and is never deleted.
-- Domains use the same model: secret fields submitted through the Domains form
-  are written to `naslos-domain-<domain>-creds` (or an existing
-  `credentialsSecret`) and never returned. An explicit `credentialsSecret` must
-  be a DNS-1123 name starting with `naslos-`; generated names always are, and
-  the prefix keeps a request from targeting another app's Secret (SEC-2026-D12).
+- Domains are deliberately **not** moved: secret fields submitted through the
+  Domains form are written to `naslos-domain-<domain>-creds` (or an existing
+  `credentialsSecret`) in the apps namespace, because the cert-manager Issuer
+  rendered for the domain references that Secret by name, so it has to be
+  readable by cert-manager from the same namespace. Values are never returned.
+  An explicit `credentialsSecret` must be a DNS-1123 name starting with
+  `naslos-`; generated names always are, and the prefix keeps a request from
+  targeting another app's Secret (SEC-2026-D12). See the
+  [upgrade note](#upgrading-from-an-apps-namespace-secret) for the DDNS move.
 - A domain update that omits the write-only `solver`, `providerConfig` or
   `credentialsSecret` preserves the stored values and validates the effective
   record. `solver: null` (or `{}`) clears a provider-rendered solver; a
   passthrough domain still requires a solver and returns 400.
+
+### Upgrading from an apps-namespace Secret
+
+Earlier releases wrote `naslos-ddns-<id>` into `naslos-apps`. On startup (and
+before the first credential read) the API migrates each entry: when the Secret
+exists only in the apps namespace it is copied into the key-custody namespace
+(create-only, same keys), the copy is verified, and only then is the
+apps-namespace copy deleted — and only when Naslos created it (the managed
+label or the generated name). A Secret you provisioned yourself is copied but
+left in place. The migration is idempotent, logs entry ids and names but never
+values, and a keys-namespace copy always wins, so a re-run or a partial
+failure is safe. Check the result with
+`kubectl -n naslos-keys get secret -l naslos.io/ddns-entry`. Nothing is
+required from the operator, and no values need re-entering.
 
 ## Drivers
 

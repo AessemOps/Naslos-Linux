@@ -9,10 +9,15 @@
 # ClusterRole at the end of this file (the kubelet stats proxy that feeds the
 # Installed tab's live usage; FR-APP-22).
 #
-# Secret CRUD here is also what lets DOMAIN and DYNAMIC-DNS credentials be
-# written to naslos-apps (docs/dynamic-dns.md); no new RBAC is needed and no
-# Secret access is added in the release namespace, so the API still cannot read
-# the proxy / LDAP / Authelia secrets.
+# Secret CRUD here is also what lets DOMAIN credentials be written to
+# naslos-apps (docs/dynamic-dns.md): a cert-manager Issuer in this namespace
+# references the Secret, so it cannot move. DYNAMIC-DNS credentials deliberately
+# do NOT live here -- user apps and Helm charts run in this namespace and can
+# read or mount any Secret beside them, so DDNS creds live in the key-custody
+# namespace (dataset-keys.yaml, FR-DNS-04). No new RBAC is needed for that: the
+# naslos-dataset-keys Role already grants Secret CRUD there. No Secret access is
+# added in the release namespace, so the API still cannot read the proxy /
+# LDAP / Authelia secrets.
 {{- $ans := .Values.apps.namespace | default "naslos-apps" }}
 {{- if and .Values.ui.enabled (ne $ans .Release.Namespace) (ne $ans (include "naslos.workloadNamespace" .)) }}
 apiVersion: rbac.authorization.k8s.io/v1

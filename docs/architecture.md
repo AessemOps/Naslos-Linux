@@ -78,7 +78,11 @@ see the [document index](README.md).
 
 Dataset encryption key Secrets live in a third, workload-free `naslos-keys`
 namespace so the API never needs Secret read access in the release namespace
-(FR-ENC-03, [dataset-encryption.md](dataset-encryption.md)).
+(FR-ENC-03, [dataset-encryption.md](dataset-encryption.md)). That key-custody
+namespace also holds the two credential classes only the API consumes —
+cloud-destination credentials (FR-REP-11) and DDNS provider credentials
+(FR-DNS-04) — because user apps and arbitrary charts run in `naslos-apps` and
+can read Secrets there.
 
 ```
         ┌──────────────────────────────────────────────────────────┐

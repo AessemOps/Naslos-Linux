@@ -720,6 +720,27 @@ assert api_env.get("DDNS_PROVIDERS_DIR"), "the API must get a DDNS provider over
 assert api_env.get("DDNS_IP_SOURCES") and api_env.get("DDNS_IPV6_SOURCES"), \
     "the API must get the public-IP detection source lists"
 assert api_env.get("DDNS_UPDATE_COOLDOWN_SECONDS"), "the API must get the DDNS update cooldown"
+# FR-DNS-04: DDNS credential Secrets live in the key-custody namespace, never
+# the apps namespace that untrusted charts can read.
+keys_ns = api_env.get("DATASET_KEYS_NAMESPACE")
+assert keys_ns, "the API must get DATASET_KEYS_NAMESPACE for DDNS/cloud key custody"
+assert keys_ns != api_env.get("APPS_NAMESPACE"), \
+    f"DDNS credential secrets must not live in the apps namespace: {keys_ns!r}"
+# FR-DNS-04: that namespace is the only place DDNS/cloud creds can be read, so
+# its Role must stay by-name (no list/watch, which would enumerate them) and the
+# Helm identity must have no rights there at all.
+assert ("Role", "naslos-dataset-keys", keys_ns) in roles, \
+    "the key-custody namespace must keep its naslos-dataset-keys Role"
+for d in docs:
+    if d.get("kind") == "Role" and d["metadata"]["name"] == "naslos-dataset-keys":
+        verbs = {v for rule in d.get("rules", []) for v in rule.get("verbs", [])}
+        assert {"get", "create", "update", "patch", "delete"} <= verbs, verbs
+        assert not (verbs & {"list", "watch"}), \
+            f"key-custody Secrets must not be listable/enumerable: {verbs}"
+    if ns_of(d) == keys_ns and d.get("kind") in ("Role", "ClusterRole"):
+        subjects = d.get("metadata", {}).get("name", "")
+        assert "helm" not in subjects, \
+            f"the Helm identity must have no rights in the key-custody namespace: {subjects}"
 
 # Privileged apps namespace: PSA privileged, with its own API Role, for charts
 # that need NET_ADMIN (VPN sidecars) and cannot run under baseline.

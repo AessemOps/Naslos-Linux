@@ -1857,11 +1857,27 @@ API keeps A/AAAA records pointed at the appliance's current public IP. See
   `lastIP`/`lastStatus`/`lastError`/`lastRunAt`/`nextRunAt`/`lastUpdateAt`. A
   detection or update failure MUST be recorded, not fatal. *(ddns tests,
   audit.sh egress assertion)*
-- **FR-DNS-04** — DDNS and domain credentials MUST come from Kubernetes Secrets
-  in the apps namespace, where the API already has namespaced Secret CRUD. The
-  API MUST NOT be granted Secret access in the release namespace, so
-  proxy/LDAP/Authelia secrets stay unreadable. *(audit.sh platform-read Role
-  assertion)*
+- **FR-DNS-04** — DDNS provider credentials MUST live in Kubernetes Secrets in
+  the key-custody namespace (`datasetEncryption.keysNamespace`, default
+  `naslos-keys`), never in the apps namespace or a pod environment: user apps
+  and arbitrary Helm charts run in (or mount any Secret from) the apps
+  namespace, while DDNS credentials are read only by the API. The namespace's
+  Role grants Secret `get/create/update/patch/delete` and deliberately no
+  `list`/`watch`. Naslos-generated Secrets MUST be named `naslos-ddns-<id>` and
+  carry `app.kubernetes.io/managed-by=naslos-api` and
+  `naslos.io/ddns-entry=<id>`; an operator-supplied `credentialsSecret` MUST
+  still be a DNS-1123 name starting with `naslos-` and MUST already exist in
+  the key-custody namespace. Deleting an entry MUST delete only a
+  Naslos-created Secret (managed label or the generated name). On upgrade, a
+  credential Secret that exists only in the apps namespace MUST be copied
+  (create-only, same keys), verified, and the apps-namespace copy deleted only
+  when Naslos created it; the migration MUST be idempotent, MUST log no
+  values, and MUST leave a keys-namespace copy untouched. Domain /
+  cert-manager credentials MUST stay in the apps namespace, because the
+  cert-manager Issuer there references them by name. The API MUST NOT be
+  granted Secret access in the release namespace, so proxy/LDAP/Authelia
+  secrets stay unreadable. *(ddns migration-planner tests; `audit.sh`
+  platform-read Role assertion)*
 - **FR-DNS-05** — cert-manager DNS-01 solvers MUST be rendered from the
   registry (with `${secret}` / `${cred.<key>}` substitution), OVH MUST be
   supported (via the OVH cert-manager webhook, since OVH is not a cert-manager
@@ -3069,6 +3085,8 @@ Dynamic DNS and the provider registry are verified by
 | `TestManagerRecordsCredentialErrors`, `TestDetectIPValidatesResponse` | FR-DNS-03 (errors recorded, IP response validated) |
 | `TestOVHDriverUpdate`, `TestCloudflareDriverCreateAndUpdate`, `TestHTTPDriverRendersAndAuthenticates` | FR-DNS-01 (drivers: URL/method/body/signature/auth) |
 | `TestHTTPDriverRejectsNonPublicTargets` | FR-DNS-07 (SSRF guard) |
+| `migration_copies_an_apps_secret_without_a_keys_copy`, `migration_keeps_an_operator_secret_in_the_apps_namespace`, `migration_deletes_a_managed_apps_leftover_when_the_keys_copy_exists`, `migration_never_touches_an_operator_secret_beside_a_keys_copy`, `migration_is_idempotent_after_a_verified_copy`, `verify_accepts_an_exact_copy_and_rejects_a_diff_or_missing_key`, `only_the_managed_label_counts_as_naslos_created` (`ddns::tests`) | FR-DNS-04 (key-custody namespace, managed-label delete guard, idempotent verified migration, no values in logs) |
+| `a_managed_secret_is_copied_verified_and_the_apps_copy_removed`, `an_operator_secret_is_copied_but_never_deleted`, `a_keys_copy_wins_and_a_managed_apps_leftover_is_removed`, `a_second_run_is_a_no_op` (`rust/api/tests/ddns_credentials.rs`) | FR-DNS-04 (the migration's IO: create-only copy, verification, conditional source delete, operator Secret untouched and unlabelled) |
 | `helm lint` + `scripts/audit.sh` DDNS assertions | FR-DNS-03/04 (env wired, egress port-scoped, no release-namespace Secret access) |
 | `naslos_vmd::model::tests::*` | FR-VMT-02/12 (name/range/enum/cloud-init/secure-boot validation, legacy-record defaults, library traversal guards) |
 | `naslos_vmd::args::tests::*` (golden argv) | FR-VMT-02/05/12 (SEC-1: the exact QEMU command line is a pinned, reviewable diff; Secure Boot pins the secboot pair, SMM and secure pflash) |

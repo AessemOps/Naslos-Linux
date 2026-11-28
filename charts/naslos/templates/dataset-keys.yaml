@@ -4,9 +4,16 @@ ZFS dataset encryption key custody (FR-ENC-03).
 Each encrypted dataset's 32-byte raw key lives in a Secret in a dedicated
 namespace. The API gets CRUD on Secrets there and nothing else: keeping the keys
 out of the release namespace means the API still cannot read the proxy, LDAP,
-Authelia or Buddy secrets (docs/dataset-encryption.md). No workload runs in
-this namespace, and the keep annotation is load-bearing: datasets live on the
-host, so deleting the namespace on uninstall would destroy the only key copy.
+Authelia or Buddy secrets (docs/dataset-encryption.md). No workload runs here,
+and the keep annotation is load-bearing: datasets live on the host, so deleting
+the namespace on uninstall would destroy the only key copy.
+
+The same namespace is the key-custody home for the two credential classes that
+only the API consumes and that must never sit beside untrusted workloads:
+cloud-destination S3 credentials (`naslos-cloud-cred-*`, docs/cloud-backup.md)
+and DDNS provider credentials (`naslos-ddns-*`, docs/dynamic-dns.md). Domain /
+cert-manager credentials stay in the apps namespace because the Issuer there
+references them by name.
 */}}
 {{- if .Values.api.enabled }}
 {{- $keys := .Values.datasetEncryption.keysNamespace | default "naslos-keys" }}
