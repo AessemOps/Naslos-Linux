@@ -729,7 +729,8 @@ error instead of writing damaged data. The Rust buddy suite in
 - **Anchors expire.** The per-receiver anchor that protects a sender's
   incremental base is honoured for 30 days (`ANCHOR_RETENTION`) after the last
   successful send, so a retired receiver or a changed URL cannot pin a source
-  snapshot forever.
+  snapshot forever. An anchor written before the `updatedAt` field existed uses
+  its file mtime (rewritten on every successful send) as that timestamp.
 - **A send refuses a dataset the node cannot see.** `zfs send` runs in the host's
   mount namespace; a dataset created from inside a pod is mounted in that pod's
   namespace only, so sending it would capture an empty filesystem and still report

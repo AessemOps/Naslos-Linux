@@ -349,7 +349,15 @@ fn anchors_for_dataset_at(dataset: &str, source: &str, now: DateTime<Utc>) -> Ve
             }
             let raw = std::fs::read(entry.path()).ok()?;
             let anchor: SendAnchor = serde_json::from_slice(&raw).ok()?;
-            (anchor_is_fresh(&anchor, now)
+            // A legacy record has no `updatedAt`; its file mtime is the last
+            // successful send because `save_anchor` rewrites it each time.
+            let modified = entry
+                .metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .map(DateTime::<Utc>::from);
+            let written = anchor_written_at(&anchor, modified);
+            (anchor_is_fresh(written, now)
                 && anchor.dataset == dataset
                 && anchor.source == source
                 && !anchor.guid.is_empty())
@@ -828,12 +836,20 @@ fn protected_guids(
     )
 }
 
+/// When an anchor was last written: its own `updatedAt`, or the file's mtime
+/// for a legacy record that predates the field.
+fn anchor_written_at(
+    anchor: &SendAnchor,
+    modified: Option<DateTime<Utc>>,
+) -> Option<DateTime<Utc>> {
+    anchor.updated_at.or(modified)
+}
+
 /// An anchor protects its GUID until `ANCHOR_RETENTION` passes without a
-/// successful send. A record written before the timestamp existed is honoured.
-fn anchor_is_fresh(anchor: &SendAnchor, now: DateTime<Utc>) -> bool {
-    anchor
-        .updated_at
-        .is_none_or(|updated| updated > now - ANCHOR_RETENTION)
+/// successful send. The caller supplies the write time: the record's
+/// `updatedAt`, or the file mtime for a legacy record that predates the field.
+fn anchor_is_fresh(written: Option<DateTime<Utc>>, now: DateTime<Utc>) -> bool {
+    written.is_none_or(|updated| updated > now - ANCHOR_RETENTION)
 }
 
 /// The protected set from already-loaded anchor records: every other
@@ -1100,10 +1116,11 @@ const _: Duration = Duration::from_secs(0);
 #[cfg(test)]
 mod tests {
     use super::{
-        anchor_is_fresh, anchor_path, protected_from, prune_plan_buddy, require_publish_evidence,
-        require_stream_matches_dataset, send_shortfall_allowance, SendAnchor, ANCHOR_RETENTION,
+        anchor_is_fresh, anchor_path, anchor_written_at, protected_from, prune_plan_buddy,
+        require_publish_evidence, require_stream_matches_dataset, send_shortfall_allowance,
+        SendAnchor, ANCHOR_RETENTION,
     };
-    use chrono::{DateTime, Utc};
+    use chrono::Utc;
     use std::collections::HashSet;
 
     fn snaps(entries: &[(&str, &str)]) -> Vec<(String, String)> {
@@ -1172,27 +1189,59 @@ mod tests {
     #[test]
     fn a_retired_receiver_stops_pinning_after_the_anchor_retention() {
         let now = Utc::now();
-        let anchor = |updated_at: Option<DateTime<Utc>>| SendAnchor {
-            receiver: "https://retired".into(),
-            source: "naslos-a/tank".into(),
-            dataset: "tank".into(),
-            guid: "guid-old".into(),
-            updated_at,
-        };
-        assert!(anchor_is_fresh(&anchor(Some(now)), now));
+        assert!(anchor_is_fresh(Some(now), now));
         assert!(anchor_is_fresh(
-            &anchor(Some(now - ANCHOR_RETENTION + chrono::Duration::days(1))),
+            Some(now - ANCHOR_RETENTION + chrono::Duration::days(1)),
             now
         ));
         // A receiver not sent to for the whole window no longer pins a
         // snapshot; the sender's own prune can reclaim it.
         assert!(!anchor_is_fresh(
-            &anchor(Some(now - ANCHOR_RETENTION - chrono::Duration::days(1))),
+            Some(now - ANCHOR_RETENTION - chrono::Duration::days(1)),
             now
         ));
-        // A record written before the timestamp existed is still honoured, so
-        // an upgrade never silently unprotects a live receiver.
-        assert!(anchor_is_fresh(&anchor(None), now));
+        // A legacy record has no `updatedAt`; the file mtime is used instead,
+        // so an old anchor still expires while a live one is kept.
+        let legacy = SendAnchor {
+            receiver: "https://retired".into(),
+            source: "naslos-a/tank".into(),
+            dataset: "tank".into(),
+            guid: "guid-old".into(),
+            updated_at: None,
+        };
+        assert_eq!(
+            anchor_written_at(&legacy, Some(now - chrono::Duration::days(1))),
+            Some(now - chrono::Duration::days(1))
+        );
+        assert!(anchor_is_fresh(
+            anchor_written_at(&legacy, Some(now - chrono::Duration::days(1))),
+            now
+        ));
+        assert!(!anchor_is_fresh(
+            anchor_written_at(
+                &legacy,
+                Some(now - ANCHOR_RETENTION - chrono::Duration::days(1))
+            ),
+            now
+        ));
+        // A newer record's own timestamp wins over a stale mtime.
+        let current = SendAnchor {
+            receiver: legacy.receiver.clone(),
+            source: legacy.source.clone(),
+            dataset: legacy.dataset.clone(),
+            guid: legacy.guid.clone(),
+            updated_at: Some(now),
+        };
+        assert_eq!(
+            anchor_written_at(
+                &current,
+                Some(now - ANCHOR_RETENTION - chrono::Duration::days(1))
+            ),
+            Some(now)
+        );
+        // Only a record with no timestamp and no mtime is treated as fresh
+        // rather than silently unprotecting a receiver.
+        assert!(anchor_is_fresh(anchor_written_at(&legacy, None), now));
     }
 
     #[test]
