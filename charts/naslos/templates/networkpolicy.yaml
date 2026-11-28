@@ -523,6 +523,45 @@ spec:
         - protocol: TCP
           port: 443
 {{- end }}
+{{- if .Values.networkPolicy.cloudEgress }}
+---
+# Cloud backup (FR-REP-11/12/13): the API pod reaches S3-compatible endpoints.
+# Public endpoints are HTTPS on 443 only; every operator-allowlisted private
+# endpoint gets its own CIDR/port pair. The API additionally vets the address
+# at connect time (and always refuses the pod/service CIDRs and the node IP),
+# so this policy is the coarse network bound, not the SSRF control.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: naslos-api-cloud-egress
+  namespace: {{ $ns }}
+  labels:
+    app.kubernetes.io/name: naslos-api
+    app.kubernetes.io/component: api
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: naslos-api
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        {{- range (.Values.networkPolicy.cloudEgressCIDRs | default (list "0.0.0.0/0")) }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: 443
+    {{- range (.Values.networkPolicy.cloudPrivateEndpoints | default list) }}
+    - to:
+        - ipBlock:
+            cidr: {{ .cidr | quote }}
+      ports:
+        - protocol: TCP
+          port: {{ .port }}
+    {{- end }}
+{{- end }}
 ---
 # C-1c: the web-upgrade operation's fallback path. The Job normally reads the
 # API's already-verified pack from the shared state volume (no network); this

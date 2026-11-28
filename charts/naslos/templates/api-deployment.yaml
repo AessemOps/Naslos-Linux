@@ -618,6 +618,30 @@ spec:
               value: {{ .Values.api.storageSchedulesFile | default "/var/lib/naslos/storage-schedules.json" | quote }}
             - name: STORAGE_SCHEDULER_INTERVAL_MS
               value: {{ .Values.api.storageSchedulerIntervalMs | default 60000 | quote }}
+            # Cloud backup (FR-REP-11/12/13). Rendered unconditionally: the
+            # routes and the scheduler exist on every install; the network
+            # policy below is the operator's egress switch.
+            - name: CLOUD_DESTINATIONS
+              value: {{ .Values.cloud.destinationsFile | default "/var/lib/naslos/cloud-destinations.json" | quote }}
+            - name: CLOUD_SCHEDULES
+              value: {{ .Values.cloud.schedulesFile | default "/var/lib/naslos/cloud-schedules.json" | quote }}
+            - name: CLOUD_SEQUENCES_DIR
+              value: {{ .Values.cloud.sequencesDir | default "/var/lib/naslos/cloud-sequences" | quote }}
+            - name: CLOUD_SCHEDULER_INTERVAL_MS
+              value: {{ .Values.cloud.schedulerIntervalMs | default 60000 | quote }}
+            - name: CLOUD_FULL_EVERY
+              value: {{ .Values.cloud.fullEvery | default 30 | quote }}
+            {{- $cloudPrivate := list }}
+            {{- range (.Values.networkPolicy.cloudPrivateEndpoints | default list) }}
+            {{- $cloudPrivate = append $cloudPrivate (printf "%s:%v" .cidr .port) }}
+            {{- end }}
+            - name: CLOUD_PRIVATE_CIDRS
+              value: {{ join "," $cloudPrivate | quote }}
+            {{- $cloudBlocked := list }}
+            {{- with .Values.networkPolicy.podCIDR }}{{ $cloudBlocked = append $cloudBlocked . }}{{ end }}
+            {{- with .Values.networkPolicy.serviceCIDR }}{{ $cloudBlocked = append $cloudBlocked . }}{{ end }}
+            - name: CLOUD_BLOCKED_CIDRS
+              value: {{ join "," $cloudBlocked | quote }}
             {{- if .Values.buddy.enabled }}
             # Buddy Backup receive side (docs/buddy-backup.md): peers push
             # encrypted chunks that this instance stores but cannot read. The
