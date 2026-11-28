@@ -312,6 +312,69 @@ the replicated key before the mount, and
 `/api/v1/zfs/snapshots/{dataset}` accepts `recursive=false` to list only the
 dataset's own snapshots (the default stays recursive for Buddy).
 
+### Cloud backup (FR-REP-11/12/13, see [cloud-backup.md](cloud-backup.md))
+
+Cloud backup streams `zfs send` into an S3-compatible bucket as separately
+sealed chunks plus a signed manifest. The bucket never sees a dataset key or
+plaintext; restore/verify need the NAS identity and KEK (and, for a raw chain of
+an encrypted source, the dataset key). Destinations keep static credentials in
+a Secret in the dataset-key namespace; every response and the config export
+expose only `hasAccessKey`/`hasSecretKey`/`hasSessionToken`.
+
+| Method | Path | Description |
+| --- | --- | --- |
+| GET, POST | `/api/cloud/destinations` | `{destinations:[…]}` / create (`201 {destination}`) |
+| GET, PUT, DELETE | `/api/cloud/destinations/{id}` | Detail / update (blank credential fields keep the stored value) / delete (`409` while a job or schedule uses it) |
+| POST | `/api/cloud/destinations/{id}/test` | `{ok, category?, conditionalCreate}` — bucket reachability, then the `If-None-Match` capability probe; `category` is one of `dns`, `blocked-address`, `tls`, `auth`, `bucket`, `region`, `network`, `unsupported` |
+| POST | `/api/cloud/send` | `{dataset, destination, keepLineages?, forceFull?}` → `202 {jobId,status:"started"}` (`409` running, `412` no identity/credentials) |
+| POST | `/api/cloud/restore` | `{destination, source, chain?, dataset, keyHex?, keepPartial?}` → `202`; `dataset` must NOT exist (`409`); a raw chain without a key is `412` |
+| POST | `/api/cloud/verify` | `{destination, source, chain?, mode:"structure"\|"content"}` → `202`; reports every missing/bad index |
+| GET | `/api/cloud/jobs` | `{jobs:[…]}` running first, then newest finished (max 20) |
+| GET, DELETE | `/api/cloud/jobs/{id}` | Job detail / cooperative cancel (`200 {"status":"cancelling"}`; `409` when already finished) |
+| GET | `/api/cloud/chains?destination=&source=` | `{chains:[…]}` newest first; `chain` is the link id, `lineage` the full's id |
+| GET, POST, DELETE | `/api/cloud/schedules` | `{schedules:[…]}` / upsert / delete (`?id=`); each due destination gets its own job |
+
+Rules:
+
+- A destination is `{name, endpoint, region, bucket, prefix, pathStyle,
+  allowInsecureHttp, enabled}` plus write-only `accessKeyId`,
+  `secretAccessKey`, `sessionToken` (blank keeps; WP-1 has no clear-token flag)
+  or an operator-managed `credentialsSecret` (must start with `naslos-cloud-`).
+  The endpoint must be an origin (`https://host[:port]`, no path/query/userinfo);
+  public endpoints are HTTPS on 443. RFC1918 endpoints require the
+  `networkPolicy.cloudPrivateEndpoints` allowlist; `allowInsecureHttp` permits
+  plaintext only for such a private endpoint and is audited. The pod/service
+  CIDRs, the node IP, loopback, link-local/metadata, CGNAT and ULA are always
+  refused, at connect time.
+- A send creates `naslos-cloud-<token>-<UTC>` (one token per destination). An
+  encrypted source is always sent raw (`-w`); a plaintext send of an encrypted
+  source is impossible. Incrementals follow the newest published GUID still
+  present locally; a new lineage starts with a full after `keepLineages`/size
+  policy (`CLOUD_FULL_EVERY`, default 30, or when incrementals reach the full's
+  size). Resume continues an interrupted link only when the snapshot pair and
+  GUIDs still match.
+- Object layout: `<prefix>/<source>/lineages/<lineage>/links/<sequence>-<chain>/chunks/<index>-g<generation>.nbc`
+  and `…/manifest.json`. Chunk sealing/DEK wrapping/stream prefix are shared
+  with Buddy; the manifest signature is domain-separated (`NCLOUD1|`) and is
+  not bound to the destination id. Publishing the manifest is last.
+- `keepLineages` (default 2, max 100) deletes whole old lineages only, newest
+  link first, manifest before chunks. Local `naslos-cloud-` snapshots for that
+  destination are pruned to the newest N.
+- Restore only creates a new dataset, preflights every chunk with a LIST,
+  streams each link once, and asserts the target GUID after every receive. On
+  failure the partial dataset is destroyed unless `keepPartial` is true; a raw
+  restore writes a create-only replica key Secret.
+- Scheduled runs record `destinationResults` values `ok` or
+  `failed: <category>`, emit `backup_success`/`backup_failure` with the `cloud`
+  tag, and write an audit record. The scheduler runs in the API with a startup
+  catch-up and a tick (`cloud.schedulerIntervalMs`).
+
+Job result shape: `{chain, snapshot, kind, plainBytes, pruned?,
+missingIndices?, badIndices?}`. `GET /api/cloud/jobs/{id}` returns the job object
+directly (`{id, kind, destination, source, dataset?, state, startedAt,
+finishedAt?, error?, progress:{chunk, totalChunks?, plainBytes, uploaded,
+skipped, link?, links?}, result?}`).
+
 ### Shares
 
 | Method | Path | Description |

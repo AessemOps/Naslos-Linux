@@ -38,6 +38,7 @@ order for the full picture, or jump to the topic you need.
 | [acl.md](acl.md) | Dataset/share ACL decision spike: POSIX presets vs NFSv4 + Samba mapping, migration fallout, recommendation | New |
 | [terminal.md](terminal.md) | Web terminal: exec scoping, RBAC, terminal namespace | New |
 | [buddy-backup.md](buddy-backup.md) | Buddy Backup: owner-to-owner encrypted backup, enrollment, verify/restore | New |
+| [cloud-backup.md](cloud-backup.md) | S3-compatible encrypted ZFS backup: providers (B2/S3/R2/MinIO), bucket and credential setup, private endpoints, retention, verify, fresh-NAS DR | New |
 | [app-catalog.md](app-catalog.md) | App catalog: git chart repositories, `naslos-app.yaml`, install lifecycle, exposure/routing, domains/certs, privileged namespace | Rebuilt |
 | [datasets-isolation.md](datasets-isolation.md) | Isolating installed apps from the shared datasets root (D3/F1): current model, options, migration, residual risk | Current |
 | [virtual-machines.md](virtual-machines.md) | QEMU/KVM supervisor: VM datasets, firmware, NAT port forwards, noVNC console, cloud-init, ISO library, snapshots | New |

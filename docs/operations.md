@@ -159,6 +159,41 @@ The first line is the slapd child, not PID 1 (the entrypoint shell). A healthy
 idle value is tens of MiB with a soft `Max open files` of 8192, not hundreds of
 MiB with 1048576.
 
+## Cloud backup
+
+Cloud backup (S3-compatible, [cloud-backup.md](cloud-backup.md)) is configured
+from **Backups → Cloud** or `/api/cloud/*`. Day-2 checks:
+
+- **Destination health.** `POST /api/cloud/destinations/{id}/test` returns
+  `{ok, category?, conditionalCreate}`. `auth` means the key was rejected,
+  `bucket` a missing bucket/permission, `region` a wrong region, `tls` a
+  certificate/hostname problem, `blocked-address` a private host that is not in
+  `networkPolicy.cloudPrivateEndpoints`, and `network`/`dns` a connectivity
+  problem. Re-test after changing the endpoint, bucket or credentials (the
+  conditional-create capability is re-learned).
+- **Stored chains.** `GET /api/cloud/chains?destination=<id>&source=<dataset>`
+  lists signed links newest first. An empty list with a passing test usually
+  means the wrong `prefix` or a different identity (the signatures would not
+  verify).
+- **Jobs.** `GET /api/cloud/jobs` shows running work first. A restart forgets
+  in-memory jobs but never a published chain. `DELETE /api/cloud/jobs/{id}`
+  cancels cooperatively; a send keeps its resume state and snapshot.
+- **Verify.** Run `POST /api/cloud/verify` with `mode:"structure"` after a
+  backup (no egress) and occasionally with `"content"` (one full download).
+  Both report every `missingIndices`/`badIndices` entry.
+- **Retention.** `keepLineages` is per source; old lineages are deleted only
+  when a newer lineage has a full. Local `naslos-cloud-` snapshots are pruned
+  per destination. Use a versioned/immutable bucket if you need protection from
+  an accidental delete.
+- **Credentials.** The Secret is `naslos-cloud-cred-<id>` in
+  `datasetEncryption.keysNamespace`. It is never returned by the API; export it
+  with `kubectl` if you manage keys externally. A destination Naslos created is
+  deleted with its Secret only when the managed-by label is present.
+- **Disaster recovery.** The identity + KEK are required to read the bucket, and
+  a raw (encrypted-source) chain also needs the dataset key. Export them now and
+  follow the fresh-NAS runbook in
+  [cloud-backup.md#disaster-recovery](cloud-backup.md#disaster-recovery).
+
 ## Upgrading
 
 ### From the web UI (installer-provisioned nodes)

@@ -186,6 +186,11 @@ deleting the keys on uninstall would destroy the data.
     chains), a recursive raw send must have a single encryption root, and a
     recursive send of a plain tree that contains an encrypted descendant (a
     filesystem or a zvol) is refused instead of streaming that child decrypted.
+- **Cloud backup:** a cloud send of an encrypted source is always raw
+  (`zfs send -w`); the bucket holds the same ciphertext plus sealed chunks. A
+  restore needs the source dataset key (the local Secret, or the write-only
+  `keyHex` on a fresh NAS) and writes a create-only replica key Secret for the
+  target. See [cloud-backup.md](cloud-backup.md).
 - **Buddy:** see the next section. The recommendation is that Buddy sends raw
   ciphertext for an encrypted dataset (`zfs send -w`) so the API never handles
   plaintext, then keeps its own AES-256-GCM envelope. That is a change to the
@@ -267,6 +272,7 @@ data-moving operation, not a property change.
 | Create atomicity | FR-ENC-06 | **Implemented** (Secret-first ordering, exact-dataset verification, agent rollback, safe Secret cleanup) |
 | Encrypted send | FR-ENC-07 | **Implemented** (raw-only local replication, destination created by the first raw send, same-key Secret copy, unlock-before-mount, mixed-chain refusal, single-root rule) |
 | Buddy raw send | FR-ENC-08 | `[OPEN]`: decide and implement `-w` for encrypted sources without changing the receiver's zero-knowledge guarantee |
+| Cloud raw send | FR-REP-11/12 | **Implemented**: encrypted sources always send raw; restore requires the dataset key and the bucket never holds plaintext |
 | Shares/apps | FR-ENC-09 | `[OPEN]`: refuse locked paths in share/app preflight and reconciliation; destroy confirmation and key deletion are implemented |
 | Key rotation/backup | FR-ENC-10 | `[OPEN]`: `zfs change-key` flow and the config/secret export story |
 | Migration tooling | FR-ENC-01 | `[OPEN]`: optional guided create+send/receive migration; never an in-place conversion |

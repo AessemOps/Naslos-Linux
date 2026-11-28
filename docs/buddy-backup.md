@@ -10,6 +10,12 @@ That is the whole point. A friend's NAS, a colleague's box or a cheap VPS can ho
 your backups without being trusted with your data, and without either side needing
 a shared secret, a VPN or an SSH account on the other machine.
 
+Cloud backup (S3-compatible, [cloud-backup.md](cloud-backup.md)) reuses the
+same envelope: the same chunk sealing, per-chain DEK wrapped to the KEK, and a
+signed manifest (with a different `NCLOUD1|` signature domain). The identity and
+KEK backups in §2 protect both paths; a bucket is as unreadable as a Buddy
+receiver without them.
+
 ## 1. Roles and trust
 
 | | Sender ("A") | Receiver ("B") |
