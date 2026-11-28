@@ -576,6 +576,17 @@ value. All routes are admin-only (owner router).
       "receivers": ["peer-a"], "cadence": "weekly", "runAt": "Sun 03:00",
       "pruneKeep": 5, "enabled": true }
   ],
+  "cloudDestinations": [
+    { "id": "cloud-1", "name": "offsite",
+      "endpoint": "https://s3.us-west-004.backblazeb2.com",
+      "region": "us-west-004", "bucket": "naslos-backups", "prefix": "host1",
+      "pathStyle": false, "allowInsecureHttp": false, "enabled": true }
+  ],
+  "cloudSchedules": [
+    { "id": "cloud-sched-1", "dataset": "tank/media",
+      "destinations": ["cloud-1"], "cadence": "weekly",
+      "runAt": "Sun 03:00", "keepLineages": 2, "enabled": true }
+  ],
   "domains": [
     { "baseDomain": "example.test", "dnsProvider": "cloudflare",
       "providerConfig": { "proxied": "false" }, "acmeEmail": "ops@example.test",
@@ -606,7 +617,10 @@ value. All routes are admin-only (owner router).
 
 All sections are arrays (never `null`), including when the subsystem is
 unavailable. Runtime state is not exported: `lastRun`/`lastResult`/`lastError`/
-`nextRun`, per-receiver results and server-owned timestamps are omitted.
+`nextRun`, per-receiver and per-destination results, cloud credential flags,
+`conditionalCreate` and server-owned timestamps are omitted. Cloud destinations
+are exported without credentials or the Secret name, and a created destination
+is listed in the report's top-level `requiresCredentials`.
 
 The export is **not** a Secret dump and the API never reads a Kubernetes Secret
 or the Buddy identity/KEK file. It excludes passwords, API/ntfy tokens, DDNS and
@@ -866,6 +880,13 @@ rule, client configuration).
 | `AGENT_TOKEN` | — | **Required.** Bearer token sent to the agent on every request but `/health` (from the `naslos-agent` Secret, key `token`) |
 | `BUDDY_IDENTITY` | `/var/lib/naslos/buddy-identity.json` | This instance's key material (private key + KEK); created on demand |
 | `BUDDY_SCHEDULES` | `/var/lib/naslos/buddy-schedules.json` | Scheduled backups (interval cadence, catch-up on startup) |
+| `CLOUD_DESTINATIONS` | `/var/lib/naslos/cloud-destinations.json` | Cloud destination records (never credentials; the Secret name is internal) |
+| `CLOUD_SCHEDULES` | `/var/lib/naslos/cloud-schedules.json` | Cloud backup schedules and per-destination results |
+| `CLOUD_SEQUENCES_DIR` | `/var/lib/naslos/cloud-sequences` | Transient send resume state and the per-source published-sequence anchor |
+| `CLOUD_SCHEDULER_INTERVAL_MS` | `60000` | Cloud scheduler tick |
+| `CLOUD_FULL_EVERY` | `30` | Start a new full lineage after this many links (also when incrementals reach the base size) |
+| `CLOUD_PRIVATE_CIDRS` | — | `cidr:port` allowlist for private S3 endpoints (from `networkPolicy.cloudPrivateEndpoints`) |
+| `CLOUD_BLOCKED_CIDRS` | pod + service CIDRs | Always-blocked endpoint ranges; the node IP (`NASLOS_NODE_IP`) is also always refused |
 | `APPS_NAMESPACE` | `naslos-apps` | Namespace user-installed apps run in |
 | `DATASET_KEYS_NAMESPACE` | `naslos-keys` | Namespace for per-dataset encryption key Secrets (FR-ENC-03); the chart grants the API Secret CRUD only there |
 | `APPS_PRIVILEGED_NAMESPACE` | `naslos-apps-priv` | Namespace for apps that declare `privileged: true` |
