@@ -11,6 +11,11 @@
   import { categoryText, type Destination, type TestResult } from '$lib/cloud/types';
 
   export let destinations: Destination[] = [];
+  /** The destination just saved by the modal, and a token per save. A
+   * credential rotation keeps the has* flags (and so the config key) the same,
+   * so a save must drop the cached result unconditionally. */
+  export let savedDestinationId = '';
+  export let savedRevision = 0;
 
   const dispatch = createEventDispatcher<{ add: void; edit: Destination; refresh: void }>();
 
@@ -18,6 +23,17 @@
   let deleting = '';
   let results: Record<string, { ok: boolean; text: string }> = {};
   let cardError = '';
+  let seenSavedRevision = 0;
+
+  $: if (savedRevision !== seenSavedRevision) {
+    seenSavedRevision = savedRevision;
+    if (savedDestinationId) {
+      const prefix = `${savedDestinationId}\u0000`;
+      results = Object.fromEntries(
+        Object.entries(results).filter(([key]) => !key.startsWith(prefix))
+      );
+    }
+  }
 
   function message(e: unknown): string {
     return e instanceof ApiError || e instanceof Error ? e.message : String(e);

@@ -48,6 +48,8 @@
 
   let destinationModal = false;
   let editingDestination: Destination | null = null;
+  let savedDestinationId = '';
+  let destinationRevision = 0;
   let restoreTarget: RestoreTarget | null = null;
 
   let activeJob: CloudJob | null = null;
@@ -211,8 +213,12 @@
     editingDestination = null;
   }
 
-  function destinationSaved() {
+  function destinationSaved(event: CustomEvent<Destination>) {
     closeDestinationModal();
+    // A credential-only edit leaves the has* flags unchanged, so the card must
+    // drop that destination's cached test result on every save.
+    savedDestinationId = event.detail?.id ?? '';
+    destinationRevision += 1;
     void refreshDestinations();
   }
 
@@ -302,6 +308,8 @@
 
     <CloudDestinationsCard
       {destinations}
+      {savedDestinationId}
+      savedRevision={destinationRevision}
       on:add={addDestination}
       on:edit={editDestination}
       on:refresh={refreshDestinations}

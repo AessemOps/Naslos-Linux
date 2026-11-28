@@ -542,6 +542,28 @@ test.describe('cloud backup (mocked)', () => {
     await expect(page.getByText('Connection OK')).toHaveCount(0);
   });
 
+  test('rotating only the secret drops the cached test result', async ({ page }) => {
+    const mock = createCloudMock();
+    mock.state.destinations = [destination()];
+    await mock.install(page);
+    await openPage(page);
+
+    await page.getByRole('button', { name: 'Test destination b2-main' }).click();
+    await expect(page.getByRole('status')).toContainText('Connection OK');
+
+    await page.getByRole('button', { name: 'Edit destination b2-main' }).click();
+    const dialog = page.getByRole('dialog', { name: 'Edit destination b2-main' });
+    await dialog.getByLabel('Secret access key').fill('rotated-secret');
+    await dialog.getByRole('button', { name: 'Save changes' }).click();
+
+    const row = page.getByTestId('cloud-destination');
+    await expect(row).toContainText('never tested');
+    await expect(page.getByText('Connection OK')).toHaveCount(0);
+    const body = mock.state.destinationPuts[0].body;
+    expect(body.secretAccessKey).toBe('rotated-secret');
+    expect(body).not.toHaveProperty('accessKeyId');
+  });
+
   test('send starts a job, polls progress and reaches succeeded', async ({ page }) => {
     const mock = createCloudMock();
     mock.state.destinations = [destination()];
