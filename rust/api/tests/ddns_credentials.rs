@@ -160,8 +160,18 @@ async fn a_managed_secret_is_copied_verified_and_the_apps_copy_removed() {
         "naslos-api"
     );
     assert_eq!(object["metadata"]["labels"]["naslos.io/ddns-entry"], ENTRY);
-    assert_eq!(object["stringData"]["username"], "home");
-    assert_eq!(object["stringData"]["password"], "s3cret-value");
+    use base64::Engine;
+    let decoded = |key: &str| {
+        let encoded = object["data"][key].as_str().unwrap();
+        String::from_utf8(
+            base64::engine::general_purpose::STANDARD
+                .decode(encoded)
+                .unwrap(),
+        )
+        .unwrap()
+    };
+    assert_eq!(decoded("username"), "home");
+    assert_eq!(decoded("password"), "s3cret-value");
 
     let deleted = read(&dir.join("state").join("deleted.log")).unwrap_or_default();
     assert!(
@@ -254,5 +264,110 @@ async fn a_second_run_is_a_no_op() {
 
     assert!(!dir.join("state").join("written.json").exists());
     assert!(!dir.join("state").join("deleted.log").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Finding (review): a keys-namespace Secret that exists but does not hold every
+/// value of the apps copy must NOT retire the apps copy, or the last complete
+/// credential copy is lost.
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn a_partial_keys_copy_keeps_the_complete_apps_copy() {
+    let _guard = KUBECTL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let previous = std::env::var_os("KUBECTL_BIN");
+    let mut partial = secret_json(SECRET, KEYS_NS, true);
+    partial["data"] = serde_json::json!({
+        "username": partial["data"]["username"].clone(),
+    });
+    let dir = fake_cluster(
+        SECRET,
+        Some(secret_json(SECRET, APPS_NS, true)),
+        Some(partial),
+    );
+    let manager = manager_with_stub(&dir.join("kubectl"));
+    manager.store().put(entry_with(SECRET)).unwrap();
+    manager.migrate_credentials().await;
+    restore_env(previous);
+
+    assert!(
+        !dir.join("state").join("deleted.log").exists(),
+        "the partial keys copy must not retire the complete apps copy"
+    );
+    assert!(state_path(&dir, APPS_NS, SECRET).exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Finding (review): deleting an entry attempts both namespaces even when the
+/// first delete fails, so a transient error cannot strand the pre-upgrade
+/// plaintext copy in the apps namespace.
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn deleting_an_entry_still_cleans_the_apps_namespace_after_a_keys_error() {
+    let _guard = KUBECTL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let previous = std::env::var_os("KUBECTL_BIN");
+    let dir = fake_cluster(
+        SECRET,
+        Some(secret_json(SECRET, APPS_NS, true)),
+        Some(secret_json(SECRET, KEYS_NS, true)),
+    );
+    // Make the keys-namespace delete fail and the apps-namespace delete succeed.
+    let failing = dir.join("failing-kubectl");
+    std::fs::write(
+        &failing,
+        format!(
+            "#!/bin/sh\n\
+             if [ \"$1\" = delete ] && [ \"$5\" = {KEYS_NS} ]; then\n\
+               echo 'transient failure' >&2\n\
+               exit 1\n\
+             fi\n\
+             exec \"{stub}\" \"$@\"\n",
+            stub = dir.join("kubectl").display()
+        ),
+    )
+    .unwrap();
+    let mut perms = std::fs::metadata(&failing).unwrap().permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+    std::fs::set_permissions(&failing, perms).unwrap();
+    std::env::set_var("KUBECTL_BIN", &failing);
+
+    let result = ddns::delete_entry_secrets(
+        &naslos_api::kube::Client::new(APPS_NS),
+        KEYS_NS,
+        APPS_NS,
+        ENTRY,
+        SECRET,
+    )
+    .await;
+    restore_env(previous);
+
+    let error = result.expect_err("the keys-namespace failure must be reported");
+    assert!(error.contains(KEYS_NS), "{error}");
+    assert!(
+        !state_path(&dir, APPS_NS, SECRET).exists(),
+        "the apps copy must be deleted even when the keys delete fails"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Finding (review): the copy moves the raw base64 `data` map, so a value that
+/// is not valid UTF-8 survives byte for byte.
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn a_binary_value_is_copied_byte_for_byte() {
+    let _guard = KUBECTL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let previous = std::env::var_os("KUBECTL_BIN");
+    use base64::Engine;
+    let binary = base64::engine::general_purpose::STANDARD.encode([0xffu8, 0x00, 0xfe]);
+    let mut source = secret_json(SECRET, APPS_NS, true);
+    source["data"]["blob"] = Value::String(binary.clone());
+    let dir = fake_cluster(SECRET, Some(source), None);
+    let manager = manager_with_stub(&dir.join("kubectl"));
+    manager.store().put(entry_with(SECRET)).unwrap();
+    manager.migrate_credentials().await;
+    restore_env(previous);
+
+    let written = read(&dir.join("state").join("written.json")).expect("a keys-namespace write");
+    let object: Value = serde_json::from_str(&written).unwrap();
+    assert_eq!(object["data"]["blob"], binary);
     let _ = std::fs::remove_dir_all(&dir);
 }

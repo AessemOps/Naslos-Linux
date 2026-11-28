@@ -208,9 +208,11 @@ Secret exists only in the apps namespace it copies the Secret into
 `naslos-keys` (create-only, same keys), verifies the copy, then deletes the
 apps-namespace copy — only when Naslos created it (the
 `app.kubernetes.io/managed-by=naslos-api` label or the `naslos-ddns-<id>` name
-pattern). A Secret you provisioned yourself is copied but left in place. The
-step is idempotent, a keys-namespace copy always wins, and the log names entry
-ids and Secret names but never values.
+pattern), and only when the keys-namespace copy holds every key/value of it, so
+a partial write never retires the last complete copy. A Secret you provisioned
+yourself is copied byte for byte but left in place. The step is idempotent, a
+keys-namespace copy wins, and the log names entry ids and Secret names but never
+values.
 
 Day-2 checks after upgrading:
 

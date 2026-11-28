@@ -102,25 +102,41 @@ pub fn is_managed_secret(secret: &serde_json::Value) -> bool {
 
 /// Decode a Secret's values into plain text. A real API server returns `data`,
 /// but a `stringData` payload (a dry-run object, or a test fixture) is accepted
-/// too, exactly as the API server would fold it in.
+/// too, exactly as the API server would fold it in. Used for the values the API
+/// sends to a provider; the migration never round-trips through this (see
+/// [`raw_secret_data`]), so a non-UTF-8 value cannot be silently rewritten.
 pub fn secret_values(secret: Option<&serde_json::Value>) -> HashMap<String, String> {
     let mut out = HashMap::new();
+    for (key, encoded) in raw_secret_data(secret) {
+        if let Ok(raw) = base64_decode(&encoded) {
+            out.insert(key, String::from_utf8_lossy(&raw).into_owned());
+        }
+    }
+    out
+}
+
+/// A Secret's `data` map as the raw base64 strings, which is exactly what the
+/// API server stores. Copying a Secret means copying this map unchanged: a
+/// decode/encode round-trip would corrupt a binary value that is not valid
+/// UTF-8, and a verification over the same lossy decode could not notice.
+pub fn raw_secret_data(
+    secret: Option<&serde_json::Value>,
+) -> std::collections::BTreeMap<String, String> {
+    let mut out = std::collections::BTreeMap::new();
     let Some(secret) = secret else {
         return out;
     };
     if let Some(data) = secret.get("data").and_then(|v| v.as_object()) {
         for (key, value) in data {
             if let Some(encoded) = value.as_str() {
-                if let Ok(raw) = base64_decode(encoded) {
-                    out.insert(key.clone(), String::from_utf8_lossy(&raw).into_owned());
-                }
+                out.insert(key.clone(), encoded.to_string());
             }
         }
     }
     if let Some(data) = secret.get("stringData").and_then(|v| v.as_object()) {
         for (key, value) in data {
             if let Some(text) = value.as_str() {
-                out.insert(key.clone(), text.to_string());
+                out.insert(key.clone(), base64_encode(text.as_bytes()));
             }
         }
     }
@@ -177,15 +193,39 @@ fn plain_secret_object(
     })
 }
 
-/// Verify a copied Secret holds every key/value of the source without ever
-/// logging or returning a value.
+/// A Secret object carrying an already-base64 `data` map, used by the migration
+/// so a value is never decoded and re-encoded.
+fn raw_secret_object(
+    name: &str,
+    namespace: &str,
+    entry_id: Option<&str>,
+    data: &std::collections::BTreeMap<String, String>,
+) -> serde_json::Value {
+    let mut object = serde_json::json!({
+        "apiVersion": "v1",
+        "kind": "Secret",
+        "metadata": { "name": name, "namespace": namespace },
+        "type": "Opaque",
+        "data": data,
+    });
+    if let Some(entry_id) = entry_id {
+        object["metadata"]["labels"] = serde_json::json!({
+            "app.kubernetes.io/managed-by": "naslos-api",
+            "naslos.io/ddns-entry": entry_id,
+        });
+    }
+    object
+}
+
+/// Verify a copied Secret holds every key/value of the source. Compared on the
+/// raw base64 `data` map, so it detects a rewritten or missing value exactly.
 pub fn verify_secret_copy(
-    expected: &HashMap<String, String>,
+    expected: &std::collections::BTreeMap<String, String>,
     target: &serde_json::Value,
 ) -> Result<(), String> {
-    let actual = secret_values(Some(target));
-    for key in expected.keys() {
-        if actual.get(key) != expected.get(key) {
+    let actual = raw_secret_data(Some(target));
+    for (key, value) in expected {
+        if actual.get(key) != Some(value) {
             return Err(format!(
                 "copy verification failed: key {key:?} is missing or differs"
             ));
@@ -801,11 +841,16 @@ impl Manager {
         }
         if !failed {
             self.migrated.store(true, Ordering::SeqCst);
-        } else if self.migrate_attempts.fetch_add(1, Ordering::SeqCst) >= MIGRATE_MAX_ATTEMPTS {
+        } else if self
+            .migrate_attempts
+            .fetch_add(1, Ordering::SeqCst)
+            .saturating_add(1)
+            >= MIGRATE_MAX_ATTEMPTS
+        {
             // Stop retrying on a persistent error (for example a Secret the API
             // may not read); the reconcile loop records the failure per run.
             tracing::warn!(
-                "giving up on the DDNS credential migration after {} attempts; \
+                "giving up on the DDNS credential migration after {} failed attempts; \
                  fix the Secret and restart",
                 MIGRATE_MAX_ATTEMPTS
             );
@@ -830,6 +875,19 @@ impl Manager {
         ) {
             MigrationStep::None => Ok(()),
             MigrationStep::DeleteSource => {
+                // Never delete the last complete copy: an interrupted earlier
+                // run, or an upsert that wrote only the submitted fields into an
+                // empty keys namespace, can leave a keys Secret that exists but
+                // is missing values the apps copy still holds. Only remove the
+                // apps copy when the keys copy supersedes it key for key.
+                let source = apps_copy.ok_or_else(|| "source Secret disappeared".to_string())?;
+                let target = keys_copy.ok_or_else(|| "keys copy disappeared".to_string())?;
+                verify_secret_copy(&raw_secret_data(Some(&source)), &target).map_err(|e| {
+                    format!(
+                        "keeping the apps-namespace copy: the keys-namespace Secret does not \
+                         supersede it ({e}); save the entry's credentials to rewrite it"
+                    )
+                })?;
                 kube.delete("secret", name, &self.apps_namespace).await?;
                 tracing::info!(
                     "removed the leftover apps-namespace DDNS credential Secret {name} for entry {}",
@@ -839,18 +897,17 @@ impl Manager {
             }
             MigrationStep::Copy { delete_source } => {
                 let source = apps_copy.ok_or_else(|| "source Secret disappeared".to_string())?;
-                let data = secret_values(Some(&source));
+                // Copy the raw base64 `data` map: decoding and re-encoding
+                // would rewrite a value that is not valid UTF-8.
+                let data = raw_secret_data(Some(&source));
                 if data.is_empty() {
                     return Err("source Secret holds no data".to_string());
                 }
                 // Only a Naslos-created Secret gets the managed labels; an
                 // operator Secret is copied unlabelled so deleting the entry
                 // never removes it.
-                let object = if delete_source {
-                    credential_secret_object(name, &self.keys_namespace, &entry.id, &data)
-                } else {
-                    plain_secret_object(name, &self.keys_namespace, &data)
-                };
+                let labels = delete_source.then_some(entry.id.as_str());
+                let object = raw_secret_object(name, &self.keys_namespace, labels, &data);
                 let created = kube.create(&object).await;
                 let target = match created {
                     Ok(()) => kube
@@ -1252,11 +1309,23 @@ pub async fn delete_entry_secrets(
     entry_id: &str,
     name: &str,
 ) -> Result<(), String> {
-    delete_secret(kube, keys_namespace, entry_id, name).await?;
-    if apps_namespace != keys_namespace {
-        delete_secret(kube, apps_namespace, entry_id, name).await?;
+    // Attempt both deletes even when the first fails: the entry is already gone
+    // from the store, so nothing retries and a short-circuit would strand the
+    // pre-upgrade plaintext copy in the apps namespace.
+    let keys = delete_secret(kube, keys_namespace, entry_id, name).await;
+    let apps = if apps_namespace != keys_namespace {
+        delete_secret(kube, apps_namespace, entry_id, name).await
+    } else {
+        Ok(())
+    };
+    match (keys, apps) {
+        (Err(e), Err(other)) => Err(format!(
+            "deleting {keys_namespace}: {e}; deleting {apps_namespace}: {other}"
+        )),
+        (Err(e), _) => Err(format!("deleting {keys_namespace}: {e}")),
+        (_, Err(e)) => Err(format!("deleting {apps_namespace}: {e}")),
+        _ => Ok(()),
     }
-    Ok(())
 }
 
 fn base64_decode(s: &str) -> Result<Vec<u8>, String> {
@@ -1264,6 +1333,11 @@ fn base64_decode(s: &str) -> Result<Vec<u8>, String> {
     base64::engine::general_purpose::STANDARD
         .decode(s.trim())
         .map_err(|e| e.to_string())
+}
+
+fn base64_encode(bytes: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
 #[cfg(test)]
@@ -1465,20 +1539,71 @@ mod tests {
 
     #[test]
     fn verify_accepts_an_exact_copy_and_rejects_a_diff_or_missing_key() {
-        let source = HashMap::from([
-            ("username".to_string(), "u".to_string()),
-            ("password".to_string(), "p".to_string()),
-        ]);
-        let copy = secret_with(&[("username", "u"), ("password", "p")], true);
-        assert!(verify_secret_copy(&source, &copy).is_ok());
+        let source = secret_with(&[("username", "u"), ("password", "p")], true);
+        let expected = raw_secret_data(Some(&source));
+        assert!(verify_secret_copy(&expected, &source).is_ok());
 
         let missing = secret_with(&[("username", "u")], true);
-        let error = verify_secret_copy(&source, &missing).unwrap_err();
+        let error = verify_secret_copy(&expected, &missing).unwrap_err();
         assert!(error.contains("password"), "{error}");
         assert!(!error.contains("p\""), "the value must not leak: {error}");
 
         let different = secret_with(&[("username", "u"), ("password", "other")], true);
-        assert!(verify_secret_copy(&source, &different).is_err());
+        assert!(verify_secret_copy(&expected, &different).is_err());
+    }
+
+    #[test]
+    fn a_partial_keys_copy_does_not_supersede_a_complete_apps_copy() {
+        // The regression the migration guards: an upsert wrote only the
+        // submitted field into an empty keys namespace, so the apps copy still
+        // holds a field the keys copy lacks. Deleting it would lose that field.
+        let apps = secret_with(&[("username", "u"), ("password", "p")], true);
+        let partial = secret_with(&[("username", "u")], true);
+        let error = verify_secret_copy(&raw_secret_data(Some(&apps)), &partial).unwrap_err();
+        assert!(error.contains("password"), "{error}");
+
+        // The reverse is fine: the apps copy needs no extra keys.
+        let full = secret_with(&[("username", "u")], true);
+        let superset = secret_with(&[("username", "u"), ("password", "p")], true);
+        assert!(verify_secret_copy(&raw_secret_data(Some(&full)), &superset).is_ok());
+    }
+
+    #[test]
+    fn a_copy_preserves_non_utf8_bytes_exactly() {
+        // 0xff is not valid UTF-8; a lossy round-trip would rewrite it.
+        use base64::Engine;
+        let binary = base64::engine::general_purpose::STANDARD.encode([0xffu8, 0x00, 0xfe]);
+        let source = serde_json::json!({
+            "metadata": { "labels": {} },
+            "data": { "blob": binary.clone() },
+        });
+        let copied = raw_secret_object(
+            "naslos-ddns-abc",
+            "naslos-keys",
+            Some("abc"),
+            &raw_secret_data(Some(&source)),
+        );
+        assert_eq!(copied["data"]["blob"], binary);
+        assert!(verify_secret_copy(&raw_secret_data(Some(&source)), &copied).is_ok());
+    }
+
+    #[test]
+    fn raw_data_folds_string_data_the_way_the_api_server_does() {
+        let plain = serde_json::json!({
+            "metadata": {},
+            "stringData": { "username": "home" },
+        });
+        let raw = raw_secret_data(Some(&plain));
+        assert_eq!(
+            raw.get("username").map(String::as_str),
+            Some(base64_encode(b"home").as_str())
+        );
+        assert_eq!(
+            secret_values(Some(&plain))
+                .get("username")
+                .map(String::as_str),
+            Some("home")
+        );
     }
 
     #[test]

@@ -737,9 +737,11 @@ for d in docs:
         assert {"get", "create", "update", "patch", "delete"} <= verbs, verbs
         assert not (verbs & {"list", "watch"}), \
             f"key-custody Secrets must not be listable/enumerable: {verbs}"
-    if ns_of(d) == keys_ns and d.get("kind") in ("Role", "ClusterRole"):
-        subjects = d.get("metadata", {}).get("name", "")
-        assert "helm" not in subjects, \
+    # The Helm app-installer identity must have no rights in the key-custody
+    # namespace: a RoleBinding there is what actually grants it.
+    if d.get("kind") == "RoleBinding" and ns_of(d) == keys_ns:
+        subjects = [s.get("name", "") for s in d.get("subjects", [])]
+        assert not any("helm" in s for s in subjects), \
             f"the Helm identity must have no rights in the key-custody namespace: {subjects}"
 
 # Privileged apps namespace: PSA privileged, with its own API Role, for charts
