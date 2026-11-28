@@ -224,10 +224,13 @@ versions and points at `make install-vm`.
 ### Rebooting the node (not an upgrade)
 
 Settings → **System** → **Reboot node** asks for `reboot` and then runs
-`talosctl reboot` through the API. Shares and apps are offline until the node
-returns; the page polls `/api/system/version` and shows "node rebooting,
-reconnecting…". Unlike the upgrade operations this works on `make install-vm`
-nodes too and does not write the operation ConfigMap.
+`talosctl reboot` through the API. A reboot and an upgrade both return `409`
+while an app job, Buddy send, cloud backup, local replication stream or
+synchronous Buddy restore is in flight, so a transfer is never cut mid-stream.
+Shares and apps are offline until the node returns; the page polls
+`/api/system/version` and shows "node rebooting, reconnecting…". Unlike the
+upgrade operations this works on `make install-vm` nodes too and does not write
+the operation ConfigMap.
 
 ### From the CLI (bootstrap or no UI access)
 

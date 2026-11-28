@@ -1752,12 +1752,20 @@ See `docs/buddy-backup.md`.
 - **FR-BUD-08** — A receiver MUST enforce per-key scope (allowed source prefixes,
   no path traversal, no absolute sources) and an optional per-key quota, and MUST
   refuse a chunk that would exceed it.
-- **FR-BUD-09** — The owner MUST be able to prune a source to the newest N chains
-  and to revoke a key. Revoking MUST stop new pushes immediately and MUST NOT be
-  presented as a deletion of existing backups. Pruning MUST NOT orphan a chain the
-  newest backup descends from: keeping a few more chains than requested is correct,
-  leaving an incremental without its base is not (the send and the schedule would
-  report success while the backup could no longer be restored).
+- **FR-BUD-09** — The owner MUST be able to prune a source to the newest N
+  lineages and to revoke a key. Revoking MUST stop new pushes immediately and
+  MUST NOT be presented as a deletion of existing backups. A lineage is a full
+  chain plus its GUID-contiguous incrementals; `keep` counts lineages, the
+  lineage holding the newest chain is always retained, and a lineage is
+  deletable only when a newer lineage has a published full. A prune MUST delete
+  whole lineages, newest link first and manifest before chunks, so it can never
+  orphan an incremental whose base was kept, and an endless incremental lineage
+  is retained whole (the sender's periodic forced full rebases it). *(tests:
+  `buddy::store::tests::a_forced_full_never_deletes_the_oldest_full_first`,
+  `buddy::store::tests::an_endless_incremental_lineage_is_kept_whole`,
+  `buddy::store::tests::an_incremental_whose_base_is_gone_never_protects_a_lineage`,
+  `buddy::store::tests::a_duplicate_full_starts_a_new_lineage`,
+  `buddy::store::tests::a_prune_deletes_the_manifest_before_the_chunks`)*
 - **FR-BUD-10** — Unknown keys, unsigned requests, stale timestamps, replayed
   requests, out-of-scope sources, tampered chunks and tampered manifests MUST each
   fail with an explicit error; a restore MUST never write unverified data.
@@ -1791,7 +1799,13 @@ See `docs/buddy-backup.md`.
   destination (overall `ok` only when every destination succeeded). A scheduled run
   MUST apply the entry's retention (`pruneKeep`) on success and MUST notify via
   ntfy on success (`backup_success`) and on failure (`backup_failure`), gated on the
-  notification settings' enabled events.
+  notification settings' enabled events. A schedule MUST force a full send every
+  `fullEvery` runs (default 30, 0 disables) so an endless incremental lineage is
+  periodically rebased onto a fresh full; the counter resets after each forced
+  full and a schedule file without the field loads with the default. *(tests:
+  `server::buddy_schedules::tests::an_old_schedule_file_loads_with_full_every_defaulting_to_30`,
+  `server::buddy_schedules::tests::full_every_is_configurable_and_round_trips`,
+  `server::buddy_schedules::tests::a_full_is_forced_on_the_nth_send_and_the_counter_resets`)*
 - **FR-BUD-16** — Owner UI: the `/backups` page MUST show the instance identity,
   the schedules, live progress of a manual send, the receiver status and a
   verify view. A manual send MUST run as an async job (`202` + pollable
@@ -1817,7 +1831,16 @@ See `docs/buddy-backup.md`.
   partially applied restore MUST NOT be reported as successful.
 - **FR-BUD-20** — A sender MUST retain the snapshot it just published and prune
   older Buddy snapshots according to the configured keep count (at least one), so
-  repeated sends do not leak snapshots on the source dataset.
+  repeated sends do not leak snapshots on the source dataset. It MUST never
+  destroy a snapshot that is another receiver's incremental base: the protected
+  set is every receiver this dataset is sent to (the current one plus each
+  receiver in a schedule for it), each contributing its newest published
+  `toGUID` from the locally persisted per-receiver anchor, and the keep count
+  applies only to the unprotected rest. No network call to another receiver is
+  made. *(tests:
+  `server::buddy_send::tests::two_receivers_with_different_bases_both_survive`,
+  `server::buddy_send::tests::keep_n_prunes_only_old_unprotected_snapshots`,
+  `server::buddy_send::tests::a_snapshot_with_an_empty_guid_is_prunable`)*
 - **FR-BUD-21** — The signed manifest's `createdAt` MUST be canonicalized to
   millisecond precision before signing and verification, so a Rust and a Go
   implementation produce identical signed bytes for the same timestamp.
@@ -2081,6 +2104,18 @@ A node installed from an installer pack can be upgraded from the web UI. A
 - **FR-UPD-09** — The API MUST expose admin-only `GET /api/system/version`,
   `GET|POST /api/system/updates[/check]`,
   `POST /api/system/operations` and `GET /api/system/operations/current`.
+  A reboot (`POST /api/system/reboot`) and an operation start
+  (`POST /api/system/operations`) MUST return `409` while an app job, a Buddy
+  send job, a cloud job, a local streaming replication job or a synchronous
+  Buddy restore is in flight, naming the blocking activity. *(tests:
+  `server::system::tests::reboot_refuses_while_a_replication_job_is_running`,
+  `server::system::tests::reboot_allows_after_the_replication_job_finished`,
+  `server::system::tests::reboot_refuses_while_a_buddy_restore_is_running`,
+  `server::system::tests::reboot_allows_after_the_buddy_restore_finished`,
+  `server::system::tests::upgrade_refuses_while_a_replication_job_is_running`,
+  `server::system::tests::upgrade_allows_after_the_replication_job_finished`,
+  `server::system::tests::upgrade_refuses_while_a_buddy_restore_is_running`,
+  `server::system::tests::upgrade_allows_after_the_buddy_restore_finished`)*
 - **FR-UPD-10** — The UI MUST show the version table, the available release and
   notes link, the three ordered actions with disabled reasons, typed-version
   confirmation dialogs (the Talos one warning about downtime), a progress panel
@@ -3025,6 +3060,9 @@ there is no live cloud drill in CI):
 | `cloud::tests::cloud_manifests_are_domain_separated_from_buddy`, `the_response_view_never_carries_a_secret_or_its_name`, `the_secret_data_reader_decodes_base64_and_string_data`, `bug_an_empty_key_is_refused_before_building_the_client` | FR-REP-11/12 (NCLOUD1 domain separation, redaction, empty-static-key refusal) |
 | `cloud::schedules::tests::per_destination_results_record_the_category`, `duplicate_destinations_are_collapsed`, `the_on_disk_shape_uses_the_api_field_names`, `server::config_import::tests::a_reordered_or_repeated_cloud_destination_set_is_the_same_schedule` | FR-REP-13 (fan-out results, dedupe, schedule store shape, order-independent import) |
 | `server::zfs::tests::a_running_cloud_send_blocks_destroying_its_source`, `server::system::tests::reboot_refuses_while_a_cloud_job_is_running` | FR-REP-13 (destroy/reboot conflict 409) |
+| `buddy::store::tests::a_forced_full_never_deletes_the_oldest_full_first`, `an_endless_incremental_lineage_is_kept_whole`, `a_duplicate_full_starts_a_new_lineage`, `a_prune_deletes_the_manifest_before_the_chunks`, `server::buddy_send::tests::two_receivers_with_different_bases_both_survive`, `keep_n_prunes_only_old_unprotected_snapshots` | FR-BUD-09/20 (lineage retention, per-receiver snapshot protection) |
+| `server::buddy_schedules::tests::a_full_is_forced_on_the_nth_send_and_the_counter_resets`, `an_old_schedule_file_loads_with_full_every_defaulting_to_30` | FR-BUD-15 (periodic forced full) |
+| `server::system::tests::reboot_refuses_while_a_replication_job_is_running`, `upgrade_refuses_while_a_buddy_restore_is_running` | FR-UPD-09 (reboot/upgrade conflict 409) |
 | `server::config_export::tests::export_shape_uses_an_allow_list_and_deterministic_arrays`, `secret_material_is_never_exported` | FR-CFG-01/03 (cloud sections and no credential/Secret-name export) |
 
 Dataset encryption is verified by the pure planners, key-custody tests and

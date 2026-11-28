@@ -412,7 +412,7 @@ and [nfsv3.md](nfsv3.md) for NFSv3 (not served).
 | POST | `/api/buddy/send` | Back a dataset up: `202 {"jobId","status":"started"}` immediately; the send runs under a server-owned context |
 | GET | `/api/buddy/jobs` | List send jobs (running + recent finished) |
 | GET, DELETE | `/api/buddy/jobs/{id}` | Job detail incl. progress / cancel (resume state is kept) |
-| GET, POST, DELETE | `/api/buddy/schedules` | Scheduled backups (`hourly\|daily\|weekly` + run-at UTC, `pruneKeep`); delete takes `?id=` |
+| GET, POST, DELETE | `/api/buddy/schedules` | Scheduled backups (`hourly\|daily\|weekly` + run-at UTC, `pruneKeep`, `fullEvery` (default 30, 0 disables, forces a full send on the Nth run), `sendsSinceFull` (read-only counter)); delete takes `?id=` |
 | POST | `/api/buddy/restore` | Restore into a dataset, or `{"verify":true}` to hash without touching ZFS |
 
 ### Notifications & metrics
@@ -544,8 +544,8 @@ and the operator's DNS or `/etc/hosts` entry must move to it; see
 | `/api/system/version` | GET | `{naslosVersion, chartVersion, talosVersion, kubernetesVersion, releaseTalosVersion, releaseKubernetesVersion, schematicId, profile, upgradable, updatesEnabled}` |
 | `/api/system/updates` | GET | Cached check: `{enabled, upgradable, current, checkedAt, source, available, stepping:{allowed,reason}, blocked, error}` |
 | `/api/system/updates/check` | POST | Run a check now; same shape as `GET /updates` |
-| `/api/system/reboot` | POST | `?confirm=reboot` → `202 {status:"rebooting"}`. Plain Talos reboot (works on installer and `make install-vm` nodes). `400` without the confirmation token; `409` while a system operation, app job or Buddy job is active; `503` when the API has no Talos client. The response can be lost when the node goes down; poll `GET /system/version`. |
-| `/api/system/operations` | POST | `{op:"naslos"\|"talos"\|"kubernetes", version?}` → `202 {operationId, job}`. `409` while an operation/app job/Buddy job runs; `412` for the profile, order, stepping or pool-health precondition |
+| `/api/system/reboot` | POST | `?confirm=reboot` → `202 {status:"rebooting"}`. Plain Talos reboot (works on installer and `make install-vm` nodes). `400` without the confirmation token; `409` while a system operation, app job, Buddy send job, cloud job, local replication job or synchronous Buddy restore is active; `503` when the API has no Talos client. The response can be lost when the node goes down; poll `GET /system/version`. |
+| `/api/system/operations` | POST | `{op:"naslos"\|"talos"\|"kubernetes", version?}` → `202 {operationId, job}`. `409` while an operation/app job/Buddy job/cloud job/replication job/Buddy restore runs; `412` for the profile, order, stepping or pool-health precondition |
 | `/api/system/operations/current` | GET | `{id, op, from, to, phase, steps[], message, startedAt, finishedAt, result, attempts, log}`; `phase:"idle"` when no operation exists |
 
 `available` is the verified candidate (`version`, `notesUrl`, `talosVersion`,
