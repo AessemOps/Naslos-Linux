@@ -40,7 +40,20 @@ export default defineConfig({
     {
       name: 'chromium',
       dependencies: ['setup'],
+      testIgnore: /cloud-backup\.spec\.ts/,
       use: { ...devices['Desktop Chrome'], storageState: 'tests/.auth/admin.json' },
+    },
+    // Fully mocked specs against a local production build (`npm run test:mocked`
+    // starts `vite preview` on :4173). No Authelia session and no live node:
+    // every /api/ path is answered by page.route in the spec.
+    {
+      name: 'mocked',
+      testMatch: /cloud-backup\.spec\.ts/,
+      use: {
+        ...devices['Desktop Chrome'],
+        baseURL: process.env.PLAYWRIGHT_BASE_URL ?? 'http://localhost:4173',
+        storageState: { cookies: [], origins: [] },
+      },
     },
   ],
 });

@@ -257,3 +257,41 @@ test('the VM wizard is axe-clean while open', async ({ page }) => {
   await expect(page.getByRole('heading', { name: 'New virtual machine' })).toBeVisible();
   await expectAxeClean(page, 'VM wizard (open)');
 });
+
+// The cloud page is mocked (no destination, schedule or job fixtures needed):
+// the scan must not touch the live cloud subsystem, which may not exist on the
+// deployed build yet.
+async function mockCloudApi(page: import('@playwright/test').Page) {
+  await page.route(/\/api\//, async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === '/api/cloud/destinations') return route.fulfill({ json: { destinations: [] } });
+    if (path === '/api/cloud/schedules') return route.fulfill({ json: { schedules: [] } });
+    if (path === '/api/cloud/jobs') return route.fulfill({ json: { jobs: [] } });
+    if (path === '/api/datasets') {
+      return route.fulfill({ json: [{ name: 'tank' }, { name: 'tank/media' }] });
+    }
+    if (path === '/api/auth/me') {
+      return route.fulfill({ json: { username: 'admin', groups: 'naslos_admins' } });
+    }
+    if (path === '/api/system/updates') {
+      return route.fulfill({ json: { available: null, stepping: { allowed: false } } });
+    }
+    if (path === '/api/apps/updates') return route.fulfill({ json: { count: 0, apps: [] } });
+    return route.fulfill({ json: {} });
+  });
+}
+
+test('the cloud backup page and destination modal are axe-clean', async ({ page }) => {
+  await setTheme(page, 'dark');
+  await mockCloudApi(page);
+  await page.goto('/backups/cloud');
+  await expect(page.getByRole('heading', { name: 'Cloud backup', exact: true })).toBeVisible();
+  await expect(page.getByText('Loading cloud backup...')).toBeHidden({ timeout: 10_000 });
+  await expectAxeClean(page, 'cloud backup page');
+
+  await page.getByRole('button', { name: 'Add destination' }).click();
+  await expect(
+    page.getByRole('dialog').getByRole('heading', { name: 'Add cloud destination' })
+  ).toBeVisible();
+  await expectAxeClean(page, 'cloud destination modal (open)');
+});
