@@ -173,7 +173,8 @@ The job:
 `forceFull: true` throws away an interrupted resume link (its state and the
 snapshot that link created) and starts a new full lineage. A deterministic
 preflight failure (the manifest/stream cap) also abandons that link instead of
-leaving state a later run would silently reuse.
+leaving state a later run would silently reuse; an agent/transport error while
+estimating is retryable and keeps the resume state.
 
 One job per `(destination, source)` runs at a time; a second one is `409`. Jobs
 are in memory; a restart loses progress but not a published chain. Resume state

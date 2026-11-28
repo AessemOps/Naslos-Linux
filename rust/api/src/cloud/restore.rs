@@ -476,6 +476,7 @@ async fn run_restore_job(
 
     let mut applied = 0usize;
     let mut total_plain = 0i64;
+    let mut total_chunks = 0i64;
     let mut last_link: Option<LinkInfo> = None;
     let total_links = plan.links.len();
     for (position, link) in plan.links.iter().enumerate() {
@@ -492,6 +493,7 @@ async fn run_restore_job(
             .unwrap_or(false);
         if already {
             applied += 1;
+            total_chunks += link.manifest.chunks.len() as i64;
             last_link = Some(link.clone());
             job.update_progress(|p| {
                 p.link = Some(position + 1);
@@ -634,6 +636,7 @@ async fn run_restore_job(
         }
         applied += 1;
         total_plain += restored.plain_bytes;
+        total_chunks += restored.chunks as i64;
         last_link = Some(link.clone());
     }
 
@@ -691,6 +694,7 @@ async fn run_restore_job(
             }
             .to_string(),
             plain_bytes: total_plain,
+            chunks: Some(total_chunks),
             ..Default::default()
         }),
     );

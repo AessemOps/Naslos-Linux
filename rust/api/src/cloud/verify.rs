@@ -370,6 +370,7 @@ async fn run_verify_job(
             })
             .unwrap_or_default(),
         plain_bytes,
+        chunks: Some(checked),
         missing_indices: missing.clone(),
         bad_indices: bad.clone(),
         ..Default::default()

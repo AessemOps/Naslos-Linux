@@ -732,7 +732,9 @@ rsync and provider **file sync** remain `[OPEN]` below.
   A send snapshots the dataset as `naslos-cloud-<token>-<UTC>` (one token per
   destination), uses raw `zfs send -w` for an encrypted source and refuses
   anything that would stream plaintext. `forceFull` discards an interrupted
-  resume link (state and its snapshot) and starts a new full. *(tests:
+  resume link (state and its snapshot) and starts a new full; a deterministic
+  preflight cap rejection also abandons the link, while an estimate
+  RPC/transport error keeps the resume state for a retry. *(tests:
   `cloud::jobs::tests::a_second_send_for_the_same_pair_is_refused_but_a_different_pair_is_not`,
   `cloud::jobs::tests::cancel_is_final_and_unknown_ids_are_reported_separately`,
   `cloud::send::tests::the_manifest_preflight_refuses_a_stream_above_the_cap`,

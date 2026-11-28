@@ -156,6 +156,16 @@ struct Ledger {
     entries: HashMap<i64, LedgerEntry>,
 }
 
+fn trim_ascii(mut bytes: &[u8]) -> &[u8] {
+    while bytes.first().is_some_and(|byte| byte.is_ascii_whitespace()) {
+        bytes = &bytes[1..];
+    }
+    while bytes.last().is_some_and(|byte| byte.is_ascii_whitespace()) {
+        bytes = &bytes[..bytes.len() - 1];
+    }
+    bytes
+}
+
 impl Ledger {
     /// Read the append-only JSON-lines ledger. A torn final line is the
     /// expected crash residue of an interrupted append and is ignored; a
@@ -166,16 +176,30 @@ impl Ledger {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Self::default()),
             Err(e) => return Err(format!("reading the resume ledger {}: {e}", path.display())),
         };
-        let text = String::from_utf8_lossy(&data);
-        let lines: Vec<&str> = text.lines().collect();
+        let segments: Vec<&[u8]> = data.split_inclusive(|byte| *byte == b'\n').collect();
         let mut ledger = Self::default();
-        for (position, line) in lines.iter().enumerate() {
-            let line = line.trim();
+        let mut valid_end = 0usize;
+        let mut offset = 0usize;
+        let mut torn = false;
+        for (position, segment) in segments.iter().enumerate() {
+            offset += segment.len();
+            let mut line: &[u8] = segment;
+            if let Some(stripped) = line.strip_suffix(b"\n") {
+                line = stripped;
+            }
+            if let Some(stripped) = line.strip_suffix(b"\r") {
+                line = stripped;
+            }
+            let line = trim_ascii(line);
             if line.is_empty() {
+                valid_end = offset;
                 continue;
             }
-            match serde_json::from_str::<LedgerLine>(line) {
-                Ok(entry) => {
+            match std::str::from_utf8(line)
+                .ok()
+                .and_then(|text| serde_json::from_str::<LedgerLine>(text).ok())
+            {
+                Some(entry) => {
                     ledger.entries.insert(
                         entry.index,
                         LedgerEntry {
@@ -184,22 +208,64 @@ impl Ledger {
                             size: entry.size,
                         },
                     );
+                    valid_end = offset;
                 }
-                Err(e) => {
-                    if position + 1 == lines.len() {
+                None => {
+                    if position + 1 == segments.len() {
                         tracing::debug!(
-                            "cloud resume ledger {}: ignoring a torn final line",
+                            "cloud resume ledger {}: repairing a torn final line",
                             path.display()
                         );
+                        torn = true;
                         break;
                     }
                     return Err(format!(
-                        "the resume ledger {} is corrupt at line {}: {e}",
+                        "the resume ledger {} is corrupt at line {}",
                         path.display(),
                         position + 1
                     ));
                 }
             }
+        }
+        // A torn append must not poison the next append: cut the file back to
+        // the last complete record and make sure the next record starts on a
+        // fresh line. This is the only write `load` performs.
+        let needs_newline = valid_end > 0 && data.get(valid_end - 1) != Some(&b'\n');
+        if torn || needs_newline {
+            let path = path.to_path_buf();
+            let truncate_to = if torn { Some(valid_end as u64) } else { None };
+            tokio::task::spawn_blocking(move || -> Result<(), String> {
+                use std::io::Write;
+                if let Some(len) = truncate_to {
+                    let file = std::fs::OpenOptions::new()
+                        .write(true)
+                        .open(&path)
+                        .map_err(|e| {
+                            format!("repairing the resume ledger {}: {e}", path.display())
+                        })?;
+                    file.set_len(len)
+                        .and_then(|_| file.sync_all())
+                        .map_err(|e| {
+                            format!("truncating the resume ledger {}: {e}", path.display())
+                        })?;
+                }
+                if needs_newline {
+                    let mut file = std::fs::OpenOptions::new()
+                        .append(true)
+                        .open(&path)
+                        .map_err(|e| {
+                            format!("repairing the resume ledger {}: {e}", path.display())
+                        })?;
+                    file.write_all(b"\n")
+                        .and_then(|_| file.sync_all())
+                        .map_err(|e| {
+                            format!("repairing the resume ledger {}: {e}", path.display())
+                        })?;
+                }
+                Ok(())
+            })
+            .await
+            .map_err(|e| format!("the resume ledger repair task failed: {e}"))??;
         }
         Ok(ledger)
     }
@@ -944,6 +1010,52 @@ mod tests {
         let ledger = Ledger::load(&path).await.unwrap();
         assert_eq!(ledger.entries.len(), 1);
         assert!(ledger.entries.contains_key(&1));
+        // The torn tail was truncated, so a further append and reload see both
+        // complete records rather than a concatenated line.
+        Ledger::append(
+            &path,
+            2,
+            LedgerEntry {
+                generation: 3,
+                sha256: "bb".into(),
+                size: 13,
+            },
+        )
+        .await
+        .unwrap();
+        let ledger = Ledger::load(&path).await.unwrap();
+        assert_eq!(ledger.entries.len(), 2);
+        assert_eq!(ledger.entries.get(&2).unwrap().sha256, "bb");
+        let raw = tokio::fs::read_to_string(&path).await.unwrap();
+        assert!(raw.ends_with('\n'));
+        assert_eq!(raw.lines().count(), 2, "{raw}");
+    }
+
+    #[tokio::test]
+    async fn a_complete_last_line_without_a_newline_still_gets_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("source.ledger.jsonl");
+        std::fs::write(
+            &path,
+            br#"{"index":1,"generation":1,"sha256":"aa","size":12}"#,
+        )
+        .unwrap();
+        let ledger = Ledger::load(&path).await.unwrap();
+        assert_eq!(ledger.entries.len(), 1);
+        Ledger::append(
+            &path,
+            2,
+            LedgerEntry {
+                generation: 1,
+                sha256: "cc".into(),
+                size: 14,
+            },
+        )
+        .await
+        .unwrap();
+        let ledger = Ledger::load(&path).await.unwrap();
+        assert_eq!(ledger.entries.len(), 2);
+        assert!(ledger.entries.contains_key(&2));
     }
 
     #[test]

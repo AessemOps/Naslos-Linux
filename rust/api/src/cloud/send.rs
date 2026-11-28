@@ -386,7 +386,7 @@ async fn run_send_job(
                     .to_string(),
                     plain_bytes: link.plain_bytes(),
                     pruned: Some(0),
-                    chunks: link.manifest.chunks.len() as i64,
+                    chunks: Some(link.manifest.chunks.len() as i64),
                     ..Default::default()
                 }),
             );
@@ -490,47 +490,9 @@ async fn run_send_job(
         }
     };
 
-    let expected = match agent
-        .estimate_send(&crate::agent::SendStreamOptions {
-            dataset: params.dataset.clone(),
-            to: snapshot.clone(),
-            from: from_snapshot.clone(),
-            raw,
-            recursive: false,
-        })
-        .await
-    {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            // A deterministic preflight failure cannot be retried with the
-            // same snapshot; abandon the link instead of leaving state that a
-            // later run would silently reuse.
-            abandon_link(
-                &agent,
-                &params.dataset,
-                &resume_path,
-                &ledger_path,
-                &snapshot,
-            )
-            .await;
-            finish_failed!(format!("estimating the stream: {e}"));
-        }
-    };
-    if let Err(e) = preflight_estimate(&params.dataset, expected) {
-        abandon_link(
-            &agent,
-            &params.dataset,
-            &resume_path,
-            &ledger_path,
-            &snapshot,
-        )
-        .await;
-        finish_failed!(e);
-    }
-    job.update_progress(|p| {
-        p.total_chunks = Some(manifest_estimate(expected).0);
-    });
-
+    // Persist the link before asking the agent to estimate it. A transport
+    // error while estimating (timeout, agent restart) is retryable with the
+    // same snapshot, so the resume state must already exist.
     let mut resume = resume_state.clone().unwrap_or(SendResume {
         destination: destination.id.clone(),
         source: source.clone(),
@@ -551,8 +513,62 @@ async fn run_send_job(
     resume.lineage = lineage.clone();
     resume.chain = chain.clone();
     if let Err(e) = save_resume(&resume_path, &resume) {
+        // Without the state a retry would orphan this snapshot; discard it.
+        abandon_link(
+            &agent,
+            &params.dataset,
+            &resume_path,
+            &ledger_path,
+            &snapshot,
+        )
+        .await;
         finish_failed!(format!("saving the resume state: {e}"));
     }
+
+    let expected = match agent
+        .estimate_send(&crate::agent::SendStreamOptions {
+            dataset: params.dataset.clone(),
+            to: snapshot.clone(),
+            from: from_snapshot.clone(),
+            raw,
+            recursive: false,
+        })
+        .await
+    {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            // RPC/transport failure: retryable. Keep the resume state (and
+            // the chunk ledger) so the next attempt continues this link.
+            if preflight_abandons(false) {
+                abandon_link(
+                    &agent,
+                    &params.dataset,
+                    &resume_path,
+                    &ledger_path,
+                    &snapshot,
+                )
+                .await;
+            }
+            finish_failed!(format!("estimating the stream: {e}"));
+        }
+    };
+    if let Err(e) = preflight_estimate(&params.dataset, expected) {
+        // Deterministic cap rejection: retrying the same link can never work.
+        if preflight_abandons(true) {
+            abandon_link(
+                &agent,
+                &params.dataset,
+                &resume_path,
+                &ledger_path,
+                &snapshot,
+            )
+            .await;
+        }
+        finish_failed!(e);
+    }
+    job.update_progress(|p| {
+        p.total_chunks = Some(manifest_estimate(expected).0);
+    });
 
     let stream = match agent
         .send_stream(&crate::agent::SendStreamOptions {
@@ -668,7 +684,7 @@ async fn run_send_job(
                 .to_string(),
                 plain_bytes: result.plain_bytes,
                 pruned: Some(result.pruned_chains),
-                chunks: result.chunks as i64,
+                chunks: Some(result.chunks as i64),
                 ..Default::default()
             };
             job.finish(JobState::Succeeded, String::new(), Some(result_view));
@@ -683,6 +699,13 @@ async fn run_send_job(
             record_scheduled_audit(&state, &params, &destination, true, "").await;
         }
     }
+}
+
+/// Whether a preflight failure must abandon the link. Only the deterministic
+/// cap check does; an estimate RPC/transport error keeps the resume state so a
+/// later attempt can continue the same snapshot.
+fn preflight_abandons(deterministic: bool) -> bool {
+    deterministic
 }
 
 /// forceFull must discard an interrupted link rather than continue it.
@@ -898,6 +921,14 @@ mod tests {
         assert!(valid_keep_lineages(100).is_ok());
         assert!(valid_keep_lineages(0).is_err());
         assert!(valid_keep_lineages(101).is_err());
+    }
+
+    #[test]
+    fn only_a_deterministic_preflight_failure_abandons_the_link() {
+        // estimate_send RPC/transport error: keep the resume state + ledger.
+        assert!(!preflight_abandons(false));
+        // manifest/stream cap rejection: nothing can make this link work.
+        assert!(preflight_abandons(true));
     }
 
     #[test]

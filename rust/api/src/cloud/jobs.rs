@@ -71,8 +71,9 @@ pub struct JobResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pruned: Option<usize>,
     /// Chunks in the link (the notification and the UI use the real count).
-    #[serde(default)]
-    pub chunks: i64,
+    /// Omitted when unknown, matching the `chunks?` contract.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chunks: Option<i64>,
     #[serde(
         rename = "missingIndices",
         default,
@@ -528,6 +529,18 @@ mod tests {
         job.finish(JobState::Cancelled, "cancelled".into(), None);
         job.finish(JobState::Failed, "late error".into(), None);
         assert_eq!(job.state(), JobState::Cancelled);
+    }
+
+    #[test]
+    fn chunks_is_omitted_until_it_is_known() {
+        let value = serde_json::to_value(JobResult::default()).unwrap();
+        assert!(value.get("chunks").is_none(), "{value}");
+        let value = serde_json::to_value(JobResult {
+            chunks: Some(12),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(value["chunks"], 12);
     }
 
     #[test]
