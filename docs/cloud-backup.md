@@ -82,8 +82,10 @@ ransomware/accident guard.
 
 ## Credentials
 
-The API writes static credentials to a Secret in the dataset-key namespace
-(`datasetEncryption.keysNamespace`, default `naslos-keys`):
+The API writes static credentials to a Secret in the key-custody namespace
+(`datasetEncryption.keysNamespace`, default `naslos-keys`), the same
+workload-free namespace as dataset keys and DDNS provider credentials
+([dataset-encryption.md](dataset-encryption.md)):
 
 ```
 naslos-cloud-cred-<destination id>
@@ -107,7 +109,10 @@ naslos-cloud-cred-<destination id>
   Secret only when Naslos created it and the managed-by label is still present.
 
 The API must be able to read Secrets in that namespace; the existing dataset-key
-RBAC covers it. No new cluster role is required.
+RBAC covers it. No new cluster role is required. Credentials must never be
+copied into the apps namespace (user apps and Helm charts can read Secrets
+there), and domain / cert-manager credentials are the only class that stays in
+the apps namespace, because the Issuer references them by name.
 
 ## Network policy and private endpoints
 

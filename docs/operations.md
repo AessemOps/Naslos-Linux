@@ -194,6 +194,43 @@ from **Backups → Cloud** or `/api/cloud/*`. Day-2 checks:
   follow the fresh-NAS runbook in
   [cloud-backup.md#disaster-recovery](cloud-backup.md#disaster-recovery).
 
+## Dynamic DNS credential migration (apps namespace → `naslos-keys`)
+
+DDNS provider credentials used to be written to `naslos-apps`. User apps and
+arbitrary Helm charts run there and the Helm identity can `get`/`list` Secrets
+in that namespace, so a chart could read or mount them. Credentials now live in
+the key-custody namespace (`datasetEncryption.keysNamespace`, default
+`naslos-keys`), beside dataset keys and cloud credentials.
+
+The API migrates an existing install by itself on first start after the
+upgrade (and again before the first credential read): for each entry whose
+Secret exists only in the apps namespace it copies the Secret into
+`naslos-keys` (create-only, same keys), verifies the copy, then deletes the
+apps-namespace copy — only when Naslos created it (the
+`app.kubernetes.io/managed-by=naslos-api` label or the `naslos-ddns-<id>` name
+pattern), and only when the keys-namespace copy holds every credential *key* of
+it, so a partial write never retires the last complete copy. A differing value
+is the newer, post-upgrade one and does not block the delete. A Secret you
+provisioned yourself is copied byte for byte but left in place. The step is
+idempotent, a keys-namespace copy wins, and the log names entry ids and Secret
+names but never values.
+
+Day-2 checks after upgrading:
+
+```bash
+# One Secret per entry, now in the key-custody namespace.
+kubectl -n naslos-keys get secret -l naslos.io/ddns-entry
+# The apps-namespace leftovers are gone (operator-provisioned ones remain).
+kubectl -n naslos-apps get secret | grep naslos-ddns- || true
+# The reconcile loop is healthy.
+curl -sk https://naslos.local/api/ddns | jq '.entries[] | {id,lastStatus,lastError}'
+```
+
+An operator-provisioned `credentialsSecret` must now exist in `naslos-keys`
+and still start with `naslos-`; a name that only exists in the apps namespace
+is refused with 400. Domain and cert-manager credentials are unchanged: they
+must stay in the apps namespace because the Issuer references them by name.
+
 ## Upgrading
 
 ### From the web UI (installer-provisioned nodes)

@@ -176,10 +176,10 @@ are in-memory (a restart abandons a running job; the app record and
 | --- | --- | --- |
 | GET | `/api/providers` | Provider definitions + `errors` from override files that failed to load. Each provider carries its `apiRights` (informational DNS-01 permissions) when defined |
 | GET | `/api/ddns` | Entries + `enabled` + `intervalSeconds` |
-| POST | `/api/ddns` | Create `{provider, zone, record, recordType, ttl, enabled, fields}` (secret fields → a Secret) |
+| POST | `/api/ddns` | Create `{provider, zone, record, recordType, ttl, enabled, fields}` (secret fields → a `naslos-ddns-<id>` Secret in the key-custody namespace; an operator `credentialsSecret` must already exist there and start with `naslos-`) |
 | GET | `/api/ddns/{id}` | Entry detail (Secret name + which fields are set, never values) |
 | PUT | `/api/ddns/{id}` | Update; an omitted secret field keeps the stored value |
-| DELETE | `/api/ddns/{id}` | Remove the entry and its credential Secret. **409** while a domain uses it as its `appRecordsDdnsEntry` |
+| DELETE | `/api/ddns/{id}` | Remove the entry and the credential Secret Naslos created (managed label or `naslos-ddns-<id>` name; an operator Secret is kept). **409** while a domain uses it as its `appRecordsDdnsEntry` |
 | POST | `/api/ddns/{id}/run` | Force one reconcile even when the IP is unchanged |
 
 
@@ -896,7 +896,7 @@ rule, client configuration).
 | `CLOUD_PRIVATE_CIDRS` | — | `cidr:port` allowlist for private S3 endpoints (from `networkPolicy.cloudPrivateEndpoints`) |
 | `CLOUD_BLOCKED_CIDRS` | pod + service CIDRs | Always-blocked endpoint ranges; the node IP (`NASLOS_NODE_IP`) is also always refused |
 | `APPS_NAMESPACE` | `naslos-apps` | Namespace user-installed apps run in |
-| `DATASET_KEYS_NAMESPACE` | `naslos-keys` | Namespace for per-dataset encryption key Secrets (FR-ENC-03); the chart grants the API Secret CRUD only there |
+| `DATASET_KEYS_NAMESPACE` | `naslos-keys` | Key-custody namespace: per-dataset encryption key Secrets (FR-ENC-03), cloud-destination credentials (`naslos-cloud-cred-*`) and DDNS provider credentials (`naslos-ddns-*`, FR-DNS-04). The chart grants the API Secret CRUD only there |
 | `APPS_PRIVILEGED_NAMESPACE` | `naslos-apps-priv` | Namespace for apps that declare `privileged: true` |
 | `APPS_CONFIG` | `/var/lib/naslos/apps.json` | Installed-app records |
 | `SOURCES_CONFIG` | `/var/lib/naslos/sources.json` | Configured chart repositories |

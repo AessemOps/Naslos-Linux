@@ -224,8 +224,14 @@ pub async fn ddns_detail_delete(
         return json(StatusCode::NOT_FOUND, serde_json::json!({ "error": e }));
     }
     if let (Some(kube), false) = (&state.kube, entry.credentials_secret.is_empty()) {
-        if let Err(e) =
-            ddns::delete_secret(kube, &state.apps_namespace, &entry.credentials_secret).await
+        if let Err(e) = ddns::delete_entry_secrets(
+            kube,
+            manager.keys_namespace(),
+            &state.apps_namespace,
+            &entry.id,
+            &entry.credentials_secret,
+        )
+        .await
         {
             tracing::warn!(
                 "could not delete DDNS Secret {}: {e}",
@@ -386,6 +392,12 @@ async fn upsert(state: &Arc<AppState>, existing: Option<Entry>, req: DdnsRequest
     entry.provider_config = resolved.config;
     entry.credential_fields = resolved.credential_fields;
 
+    // An existing install's Secret may still be in the apps namespace; the
+    // one-shot migration (also run at startup) moves it before any read/write.
+    if !entry.credentials_secret.is_empty() {
+        manager.migrate_credentials().await;
+    }
+
     if !resolved.secret_values.is_empty() {
         let secret_name = if entry.credentials_secret.is_empty() {
             entry.secret_name()
@@ -401,9 +413,43 @@ async fn upsert(state: &Arc<AppState>, existing: Option<Entry>, req: DdnsRequest
                 serde_json::json!({ "error": "cannot reach the Kubernetes API to store credentials" }),
             );
         };
+        // An operator-supplied Secret must already exist in the key-custody
+        // namespace: that namespace is the only place a DDNS Secret is read
+        // from, so accepting a name elsewhere would store credentials nothing
+        // can use (FR-DNS-04).
+        if secret_name != entry.secret_name() {
+            match kube
+                .get_json("secret", &secret_name, manager.keys_namespace())
+                .await
+            {
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    return json(
+                        StatusCode::BAD_REQUEST,
+                        serde_json::json!({
+                            "error": format!(
+                                "Secret {secret_name:?} does not exist in {}",
+                                manager.keys_namespace()
+                            ),
+                        }),
+                    );
+                }
+                Err(e) => {
+                    return json(
+                        StatusCode::BAD_GATEWAY,
+                        serde_json::json!({ "error": format!("reading the credential Secret: {e}") }),
+                    );
+                }
+            }
+        }
+        // The key-custody namespace (not the apps namespace): user apps and
+        // arbitrary Helm charts run there and can read every Secret beside
+        // them, and DDNS credentials are only ever read by the API itself
+        // (FR-DNS-04).
         if let Err(e) = ddns::write_secret(
             kube,
-            &state.apps_namespace,
+            manager.keys_namespace(),
+            &entry.id,
             &secret_name,
             &resolved.secret_values,
         )
@@ -425,7 +471,7 @@ async fn upsert(state: &Arc<AppState>, existing: Option<Entry>, req: DdnsRequest
         };
         if let Err(e) = ddns::remove_secret_keys(
             kube,
-            &state.apps_namespace,
+            manager.keys_namespace(),
             &entry.credentials_secret,
             &resolved.removed_secret_keys,
         )
@@ -553,6 +599,7 @@ mod tests {
         let manager = crate::ddns::Manager::new(crate::ddns::Options {
             registry: Arc::new(crate::providers::Registry::load("")),
             store_path: path.display().to_string(),
+            keys_namespace: "naslos-keys".to_string(),
             apps_namespace: "naslos-apps".to_string(),
             kube: None,
             ip_sources: Vec::new(),
