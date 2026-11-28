@@ -713,13 +713,23 @@ error instead of writing damaged data. The Rust buddy suite in
   starts a new lineage and lets the receiver's retention reclaim the old one.
   A forced full only happens when the schedule also sets `pruneKeep` > 0, since
   without retention the old lineage would accumulate; the forced full still
-  passes the normal truncation/content checks (only a manual `force` skips
-  them). The counter (`sendsSinceFull`) resets after a forced full, and an older
-  schedule file without the field loads with the default.
-- **Interrupted pushes are reclaimed.** A chain directory with no published
-  manifest (a cancelled or crashed push) has no `toGUID`, so nothing can descend
-  from it; a prune deletes it unconditionally rather than letting its chunks
-  occupy quota forever.
+  passes the normal truncation/content checks. A manual `force` only bypasses
+  the two "evidence unavailable" refusals (the agent cannot estimate the send,
+  or the dataset's used space cannot be read); the shortfall check always runs
+  and the content check still runs whenever `used` is available. The counter
+  (`sendsSinceFull`) resets after a forced full, and an older schedule file
+  without the field loads with the default.
+- **Interrupted pushes are reclaimed.** A chain directory with no
+  `manifest.json` (a cancelled or crashed push) has no `toGUID`, so nothing can
+  descend from it; a prune deletes it once it has been untouched for 24 h
+  (`UNPUBLISHED_CHAIN_GRACE`), so a live upload streaming into a fresh chain is
+  never deleted mid-flight. A manifest that exists but cannot be read or parsed
+  is treated as published and kept: a transient read error must never destroy a
+  restorable backup.
+- **Anchors expire.** The per-receiver anchor that protects a sender's
+  incremental base is honoured for 30 days (`ANCHOR_RETENTION`) after the last
+  successful send, so a retired receiver or a changed URL cannot pin a source
+  snapshot forever.
 - **A send refuses a dataset the node cannot see.** `zfs send` runs in the host's
   mount namespace; a dataset created from inside a pod is mounted in that pod's
   namespace only, so sending it would capture an empty filesystem and still report

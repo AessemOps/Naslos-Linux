@@ -285,7 +285,16 @@ struct SendAnchor {
     source: String,
     dataset: String,
     guid: String,
+    /// When this send last published to the receiver. An anchor older than
+    /// `ANCHOR_RETENTION` is expired, so a retired receiver cannot pin a
+    /// snapshot forever.
+    #[serde(default, rename = "updatedAt")]
+    updated_at: Option<DateTime<Utc>>,
 }
+
+/// How long an anchor keeps protecting its GUID. A receiver that has had no
+/// successful send for this long no longer holds a base worth protecting.
+pub(crate) const ANCHOR_RETENTION: chrono::Duration = chrono::Duration::days(30);
 
 fn anchors_dir() -> std::path::PathBuf {
     state_base_dir().join("buddy-anchors")
@@ -310,6 +319,7 @@ fn save_anchor(receiver: &str, source: &str, dataset: &str, guid: &str) -> Resul
         source: source.to_string(),
         dataset: dataset.to_string(),
         guid: guid.to_string(),
+        updated_at: Some(Utc::now()),
     };
     let data = serde_json::to_vec_pretty(&anchor).map_err(|e| e.to_string())?;
     if let Some(dir) = path.parent() {
@@ -321,6 +331,12 @@ fn save_anchor(receiver: &str, source: &str, dataset: &str, guid: &str) -> Resul
 /// Every receiver anchor recorded for `dataset` under `source`, so a receiver
 /// used only by an ad-hoc send is still discoverable without a schedule.
 fn anchors_for_dataset(dataset: &str, source: &str) -> Vec<SendAnchor> {
+    anchors_for_dataset_at(dataset, source, Utc::now())
+}
+
+/// Anchors still inside `ANCHOR_RETENTION`; an old one is a retired receiver
+/// whose base is no longer worth pinning.
+fn anchors_for_dataset_at(dataset: &str, source: &str, now: DateTime<Utc>) -> Vec<SendAnchor> {
     let entries = match std::fs::read_dir(anchors_dir()) {
         Ok(entries) => entries,
         Err(_) => return Vec::new(),
@@ -333,8 +349,11 @@ fn anchors_for_dataset(dataset: &str, source: &str) -> Vec<SendAnchor> {
             }
             let raw = std::fs::read(entry.path()).ok()?;
             let anchor: SendAnchor = serde_json::from_slice(&raw).ok()?;
-            (anchor.dataset == dataset && anchor.source == source && !anchor.guid.is_empty())
-                .then_some(anchor)
+            (anchor_is_fresh(&anchor, now)
+                && anchor.dataset == dataset
+                && anchor.source == source
+                && !anchor.guid.is_empty())
+            .then_some(anchor)
         })
         .collect()
 }
@@ -809,6 +828,14 @@ fn protected_guids(
     )
 }
 
+/// An anchor protects its GUID until `ANCHOR_RETENTION` passes without a
+/// successful send. A record written before the timestamp existed is honoured.
+fn anchor_is_fresh(anchor: &SendAnchor, now: DateTime<Utc>) -> bool {
+    anchor
+        .updated_at
+        .is_none_or(|updated| updated > now - ANCHOR_RETENTION)
+}
+
 /// The protected set from already-loaded anchor records: every other
 /// receiver's newest published GUID plus this send's own target.
 fn protected_from(
@@ -1073,9 +1100,10 @@ const _: Duration = Duration::from_secs(0);
 #[cfg(test)]
 mod tests {
     use super::{
-        anchor_path, protected_from, prune_plan_buddy, require_publish_evidence,
-        require_stream_matches_dataset, send_shortfall_allowance, SendAnchor,
+        anchor_is_fresh, anchor_path, protected_from, prune_plan_buddy, require_publish_evidence,
+        require_stream_matches_dataset, send_shortfall_allowance, SendAnchor, ANCHOR_RETENTION,
     };
+    use chrono::{DateTime, Utc};
     use std::collections::HashSet;
 
     fn snaps(entries: &[(&str, &str)]) -> Vec<(String, String)> {
@@ -1142,19 +1170,48 @@ mod tests {
     }
 
     #[test]
+    fn a_retired_receiver_stops_pinning_after_the_anchor_retention() {
+        let now = Utc::now();
+        let anchor = |updated_at: Option<DateTime<Utc>>| SendAnchor {
+            receiver: "https://retired".into(),
+            source: "naslos-a/tank".into(),
+            dataset: "tank".into(),
+            guid: "guid-old".into(),
+            updated_at,
+        };
+        assert!(anchor_is_fresh(&anchor(Some(now)), now));
+        assert!(anchor_is_fresh(
+            &anchor(Some(now - ANCHOR_RETENTION + chrono::Duration::days(1))),
+            now
+        ));
+        // A receiver not sent to for the whole window no longer pins a
+        // snapshot; the sender's own prune can reclaim it.
+        assert!(!anchor_is_fresh(
+            &anchor(Some(now - ANCHOR_RETENTION - chrono::Duration::days(1))),
+            now
+        ));
+        // A record written before the timestamp existed is still honoured, so
+        // an upgrade never silently unprotects a live receiver.
+        assert!(anchor_is_fresh(&anchor(None), now));
+    }
+
+    #[test]
     fn every_receivers_anchor_protects_its_guid_but_not_this_sends() {
+        let now = Utc::now();
         let anchors = vec![
             SendAnchor {
                 receiver: "https://a".into(),
                 source: "naslos-a/tank".into(),
                 dataset: "tank".into(),
                 guid: "guid-a".into(),
+                updated_at: Some(now),
             },
             SendAnchor {
                 receiver: "https://b".into(),
                 source: "naslos-a/tank".into(),
                 dataset: "tank".into(),
                 guid: "guid-b".into(),
+                updated_at: Some(now),
             },
         ];
         let protected = protected_from("https://a", "guid-a-new", &anchors);

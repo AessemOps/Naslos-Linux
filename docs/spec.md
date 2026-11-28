@@ -1760,13 +1760,19 @@ See `docs/buddy-backup.md`.
   deletable only when a newer lineage has a published full. A prune MUST delete
   whole lineages, newest link first and manifest before chunks, so it can never
   orphan an incremental whose base was kept, and an endless incremental lineage
-  is retained whole (the sender's periodic forced full rebases it). *(tests:
+  is retained whole (the sender's periodic forced full rebases it). A chain
+  directory with no manifest is reclaimed only after 24 h untouched
+  (`UNPUBLISHED_CHAIN_GRACE`), so a live upload is never deleted mid-flight,
+  and a manifest that exists but cannot be read is treated as published and
+  kept. *(tests:
   `buddy::store::tests::a_forced_full_never_deletes_the_oldest_full_first`,
   `buddy::store::tests::an_endless_incremental_lineage_is_kept_whole`,
   `buddy::store::tests::an_incremental_whose_base_is_gone_never_protects_a_lineage`,
   `buddy::store::tests::a_duplicate_full_starts_a_new_lineage`,
   `buddy::store::tests::a_prune_deletes_the_manifest_before_the_chunks`,
-  `buddy::store::tests::an_unpublished_chain_is_reclaimed_without_touching_a_lineage`)*
+  `buddy::store::tests::an_unpublished_chain_is_reclaimed_without_touching_a_lineage`,
+  `buddy::store::tests::an_unpublished_chain_inside_the_grace_window_survives`,
+  `buddy::store::tests::a_chain_whose_manifest_is_unreadable_is_treated_as_published`)*
 - **FR-BUD-10** — Unknown keys, unsigned requests, stale timestamps, replayed
   requests, out-of-scope sources, tampered chunks and tampered manifests MUST each
   fail with an explicit error; a restore MUST never write unverified data.
@@ -1836,19 +1842,20 @@ See `docs/buddy-backup.md`.
 - **FR-BUD-20** — A sender MUST retain the snapshot it just published and prune
   older Buddy snapshots according to the configured keep count (at least one), so
   repeated sends do not leak snapshots on the source dataset. It MUST never
-  destroy a snapshot that is another receiver's incremental base: the protected
-  set is every receiver this dataset is sent to (the current one plus each
-  receiver in a schedule for it), each contributing its newest published
-  `toGUID` from the locally persisted per-receiver anchor, and the keep count
-  applies only to the unprotected rest. No network call to another receiver is
-  made. The anchor is persisted per receiver, source and dataset, and the
-  anchors directory is enumerated so an ad-hoc send's receiver is protected
-  too. *(tests:
+  destroy a snapshot that is another receiver's incremental base. The protected
+  set is this send's target plus every receiver with a persisted anchor for
+  this dataset and source, each contributing its newest published `toGUID`; the
+  anchors directory is enumerated, so an ad-hoc send's receiver is protected
+  without a schedule entry, and an anchor expires 30 days after its last
+  successful send so a retired receiver cannot pin a snapshot forever. The keep
+  count applies only to the unprotected rest, and no network call to another
+  receiver is made. *(tests:
   `server::buddy_send::tests::two_receivers_with_different_bases_both_survive`,
   `server::buddy_send::tests::keep_n_prunes_only_old_unprotected_snapshots`,
   `server::buddy_send::tests::a_snapshot_with_an_empty_guid_is_prunable`,
   `server::buddy_send::tests::an_anchor_is_per_receiver_source_and_dataset`,
-  `server::buddy_send::tests::every_receivers_anchor_protects_its_guid_but_not_this_sends`)*
+  `server::buddy_send::tests::every_receivers_anchor_protects_its_guid_but_not_this_sends`,
+  `server::buddy_send::tests::a_retired_receiver_stops_pinning_after_the_anchor_retention`)*
 - **FR-BUD-21** — The signed manifest's `createdAt` MUST be canonicalized to
   millisecond precision before signing and verification, so a Rust and a Go
   implementation produce identical signed bytes for the same timestamp.
