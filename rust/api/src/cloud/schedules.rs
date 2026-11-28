@@ -88,6 +88,19 @@ impl Default for ScheduleEntry {
     }
 }
 
+/// The canonical destination set: trimmed, de-duplicated and sorted. Used for
+/// natural-key matching and change detection so a reordered import is a no-op.
+pub fn destination_set(ids: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = ids
+        .iter()
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty())
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
 impl ScheduleEntry {
     /// De-duplicated destinations, order kept.
     pub fn destination_list(&self) -> Vec<String> {

@@ -1137,6 +1137,9 @@ fn plan_cloud(
             ));
             continue;
         }
+        // Canonicalize the set (trim, dedupe, sort) so a reordered or repeated
+        // destination list is the same schedule.
+        let mapped = crate::cloud::schedules::destination_set(&mapped);
         let mut value = crate::cloud::schedules::ScheduleEntry {
             id: new_server_id(),
             dataset: record.dataset.trim().to_string(),
@@ -1167,7 +1170,11 @@ fn plan_cloud(
             errors.push(format!("{label}: at least one destination is required"));
             continue;
         }
-        let key = format!("{}|{}", value.dataset, value.destination_list().join(","));
+        let key = format!(
+            "{}|{}",
+            value.dataset,
+            crate::cloud::schedules::destination_set(&value.destination_list()).join(",")
+        );
         if !seen_schedules.insert(key) {
             schedule_plans.push(CloudSchedulePlan {
                 entry: label,
@@ -1185,7 +1192,8 @@ fn plan_cloud(
             .iter()
             .filter(|schedule| {
                 schedule.dataset == value.dataset
-                    && schedule.destination_list() == value.destination_list()
+                    && crate::cloud::schedules::destination_set(&schedule.destination_list())
+                        == crate::cloud::schedules::destination_set(&value.destination_list())
             })
             .cloned()
             .collect();
@@ -1259,7 +1267,9 @@ fn cloud_schedule_changes(
     if old.dataset != new.dataset {
         changes.push("dataset".to_string());
     }
-    if old.destination_list() != new.destination_list() {
+    if crate::cloud::schedules::destination_set(&old.destination_list())
+        != crate::cloud::schedules::destination_set(&new.destination_list())
+    {
         changes.push("destinations".to_string());
     }
     if old.cadence != new.cadence {

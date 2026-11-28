@@ -178,9 +178,7 @@ pub async fn prepare(
     let links = super::store::select_links(&all, target).map_err(RestoreError::BadRequest)?;
     let anchor = AnchorPaths::new(&cloud.source_state_dir(&destination.id), &source).anchor;
     let last = super::store::last_published(&anchor).map_err(RestoreError::Upstream)?;
-    let summaries: Vec<crate::buddy::client::ChainSummary> =
-        links.iter().map(LinkInfo::summary).collect();
-    crate::buddy::client::validate_restore_sequence(&source, &summaries, last)
+    super::store::validate_sequence(&source, &links, target, last)
         .map_err(RestoreError::BadRequest)?;
     let raw = links.iter().any(LinkInfo::raw);
     if raw && links.iter().any(|l| !l.raw()) {
@@ -575,7 +573,10 @@ async fn run_restore_job(
                 } else {
                     JobState::Failed
                 },
-                error,
+                format!(
+                    "{error}{}",
+                    partial_kept_suffix(request.keep_partial, applied)
+                ),
                 None,
             );
             return;
@@ -597,7 +598,10 @@ async fn run_restore_job(
                 } else {
                     JobState::Failed
                 },
-                format!("zfs receive failed: {error}"),
+                format!(
+                    "zfs receive failed: {error}{}",
+                    partial_kept_suffix(request.keep_partial, applied)
+                ),
                 None,
             );
             return;
@@ -621,7 +625,8 @@ async fn run_restore_job(
             job.finish(
                 JobState::Failed,
                 format!(
-                    "the receive completed but the target does not hold GUID {to_guid}; the stream did not apply as signed"
+                    "the receive completed but the target does not hold GUID {to_guid}; the stream did not apply as signed{}",
+                    partial_kept_suffix(request.keep_partial, applied)
                 ),
                 None,
             );
@@ -642,7 +647,14 @@ async fn run_restore_job(
             request.keep_partial && applied > 0,
         )
         .await;
-        job.finish(JobState::Cancelled, "cancelled".to_string(), None);
+        job.finish(
+            JobState::Cancelled,
+            format!(
+                "cancelled{}",
+                partial_kept_suffix(request.keep_partial, applied)
+            ),
+            None,
+        );
         return;
     }
 
@@ -684,6 +696,42 @@ async fn run_restore_job(
     );
 }
 
+/// What a failed restore must do with the target dataset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CleanupPlan {
+    /// Existence could not be established: keep the dataset and its key.
+    Keep,
+    /// The dataset exists: destroy it, then re-check.
+    DestroyThenCheck,
+    /// The dataset is absent already: only re-check/delete the key.
+    CheckOnly,
+}
+
+fn cleanup_plan(exists_before: Result<bool, ()>) -> CleanupPlan {
+    match exists_before {
+        Ok(true) => CleanupPlan::DestroyThenCheck,
+        Ok(false) => CleanupPlan::CheckOnly,
+        Err(()) => CleanupPlan::Keep,
+    }
+}
+
+/// The replica key may be removed only when a post-destroy listing proves the
+/// dataset absent. A listing error means "may exist" and keeps the only key.
+fn replica_secret_removable(exists_after: Result<bool, ()>) -> bool {
+    matches!(exists_after, Ok(false))
+}
+
+/// The suffix appended to a restore error when `keepPartial` kept data.
+pub fn partial_kept_suffix(keep_partial: bool, applied: usize) -> String {
+    if keep_partial && applied > 0 {
+        format!(
+            " (partial dataset kept: only the {applied} fully applied link(s) are usable; a failed first full leaves no dataset)"
+        )
+    } else {
+        String::new()
+    }
+}
+
 async fn cleanup_restore(
     state: &AppState,
     agent: &crate::agent::Client,
@@ -695,19 +743,38 @@ async fn cleanup_restore(
     if keep_partial {
         return;
     }
-    let exists = crate::server::buddy_restore::live_dataset_exists(agent, dataset)
-        .await
-        .unwrap_or(false);
-    if exists {
-        if let Err(e) = agent.destroy_dataset(dataset, true).await {
-            tracing::warn!("cloud restore: could not destroy the partial dataset {dataset}: {e}");
+    let before = crate::server::buddy_restore::live_dataset_exists(agent, dataset).await;
+    match cleanup_plan(before.map_err(|_| ())) {
+        CleanupPlan::Keep => {
+            tracing::warn!(
+                "cloud restore: cannot determine whether {dataset} exists; keeping it and its key Secret"
+            );
             return;
         }
+        CleanupPlan::DestroyThenCheck => {
+            if let Err(e) = agent.destroy_dataset(dataset, true).await {
+                tracing::warn!(
+                    "cloud restore: could not destroy the partial dataset {dataset}: {e}"
+                );
+                // The dataset may still exist, so its key must stay.
+                return;
+            }
+        }
+        CleanupPlan::CheckOnly => {}
     }
-    if raw && secret_created && !exists {
-        // The dataset never landed (or was just destroyed), so the key Secret
-        // this restore created is safe to remove. A Secret that pre-existed was
-        // refused by `write_replica_secret`, so this can only be ours.
+    // Re-list after the destroy. A listing failure means the dataset may still
+    // exist, so the key Secret (the only decrypt path) is kept.
+    let after = crate::server::buddy_restore::live_dataset_exists(agent, dataset).await;
+    if !replica_secret_removable(after.map_err(|_| ())) {
+        tracing::warn!(
+            "cloud restore: {dataset} may still exist after cleanup; keeping its key Secret"
+        );
+        return;
+    }
+    if raw && secret_created {
+        // The dataset is now provably absent, so the key Secret this restore
+        // created is safe to remove. A Secret that pre-existed was refused by
+        // `write_replica_secret`, so this can only be ours.
         if let Some(kube) = state.kube.as_ref() {
             if let Ok(name) = crate::dataset_encryption::secret_name_for_dataset(dataset) {
                 let namespace = crate::dataset_encryption::keys_namespace();
@@ -770,6 +837,28 @@ mod tests {
         assert!(parse_key_hex(&"00".repeat(32)).is_ok());
         assert!(parse_key_hex("00").is_err());
         assert!(parse_key_hex(&"zz".repeat(32)).is_err());
+    }
+
+    #[test]
+    fn a_failed_cleanup_keeps_the_key_only_when_the_dataset_is_provably_absent() {
+        assert_eq!(cleanup_plan(Ok(true)), CleanupPlan::DestroyThenCheck);
+        assert_eq!(cleanup_plan(Ok(false)), CleanupPlan::CheckOnly);
+        assert_eq!(cleanup_plan(Err(())), CleanupPlan::Keep);
+        assert!(replica_secret_removable(Ok(false)));
+        assert!(!replica_secret_removable(Ok(true)));
+        assert!(!replica_secret_removable(Err(())));
+    }
+
+    #[test]
+    fn keep_partial_only_notes_fully_applied_links() {
+        assert!(partial_kept_suffix(false, 3).is_empty());
+        assert!(partial_kept_suffix(true, 0).is_empty());
+        let note = partial_kept_suffix(true, 2);
+        assert!(note.contains("2 fully applied link(s)"), "{note}");
+        assert!(
+            note.contains("failed first full leaves no dataset"),
+            "{note}"
+        );
     }
 
     #[test]

@@ -136,35 +136,116 @@ pub fn record_published(anchor: &FsPath, sequence: u64) -> Result<(), String> {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct LedgerEntry {
+struct LedgerLine {
+    index: i64,
     generation: u16,
     sha256: String,
     size: usize,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
+struct LedgerEntry {
+    generation: u16,
+    sha256: String,
+    #[allow(dead_code)]
+    size: usize,
+}
+
+#[derive(Debug, Clone, Default)]
 struct Ledger {
-    #[serde(default)]
-    entries: HashMap<String, LedgerEntry>,
+    entries: HashMap<i64, LedgerEntry>,
 }
 
 impl Ledger {
-    fn load(path: &FsPath) -> Self {
-        match std::fs::read(path) {
-            Ok(data) => serde_json::from_slice(&data).unwrap_or_default(),
-            Err(_) => Self::default(),
-        }
-    }
-
-    fn save(&self, path: &FsPath) -> Result<(), String> {
-        if let Some(dir) = path.parent() {
-            if !dir.as_os_str().is_empty() {
-                std::fs::create_dir_all(dir)
-                    .map_err(|e| format!("creating {}: {e}", dir.display()))?;
+    /// Read the append-only JSON-lines ledger. A torn final line is the
+    /// expected crash residue of an interrupted append and is ignored; a
+    /// malformed earlier line is real corruption and fails closed.
+    async fn load(path: &FsPath) -> Result<Self, String> {
+        let data = match tokio::fs::read(path).await {
+            Ok(data) => data,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Self::default()),
+            Err(e) => return Err(format!("reading the resume ledger {}: {e}", path.display())),
+        };
+        let text = String::from_utf8_lossy(&data);
+        let lines: Vec<&str> = text.lines().collect();
+        let mut ledger = Self::default();
+        for (position, line) in lines.iter().enumerate() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            match serde_json::from_str::<LedgerLine>(line) {
+                Ok(entry) => {
+                    ledger.entries.insert(
+                        entry.index,
+                        LedgerEntry {
+                            generation: entry.generation,
+                            sha256: entry.sha256,
+                            size: entry.size,
+                        },
+                    );
+                }
+                Err(e) => {
+                    if position + 1 == lines.len() {
+                        tracing::debug!(
+                            "cloud resume ledger {}: ignoring a torn final line",
+                            path.display()
+                        );
+                        break;
+                    }
+                    return Err(format!(
+                        "the resume ledger {} is corrupt at line {}: {e}",
+                        path.display(),
+                        position + 1
+                    ));
+                }
             }
         }
-        let data = serde_json::to_vec_pretty(self).map_err(|e| e.to_string())?;
-        crate::chartsrepo::write_atomic(&path.display().to_string(), &data, 0o600, 0o700)
+        Ok(ledger)
+    }
+
+    /// Append one chunk record and fsync it before the next chunk is uploaded.
+    async fn append(path: &FsPath, index: i64, entry: LedgerEntry) -> Result<(), String> {
+        let path = path.to_path_buf();
+        let line = serde_json::to_string(&LedgerLine {
+            index,
+            generation: entry.generation,
+            sha256: entry.sha256,
+            size: entry.size,
+        })
+        .map_err(|e| e.to_string())?;
+        tokio::task::spawn_blocking(move || {
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            if let Some(dir) = path.parent() {
+                if !dir.as_os_str().is_empty() {
+                    std::fs::create_dir_all(dir)
+                        .map_err(|e| format!("creating {}: {e}", dir.display()))?;
+                }
+            }
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .mode(0o600)
+                .open(&path)
+                .map_err(|e| format!("opening the resume ledger {}: {e}", path.display()))?;
+            file.write_all(format!("{line}\n").as_bytes())
+                .and_then(|_| file.sync_data())
+                .map_err(|e| format!("writing the resume ledger {}: {e}", path.display()))
+        })
+        .await
+        .map_err(|e| format!("the resume ledger task failed: {e}"))?
+    }
+
+    async fn clear(path: &FsPath) -> Result<(), String> {
+        match tokio::fs::remove_file(path).await {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(format!(
+                "removing the resume ledger {}: {e}",
+                path.display()
+            )),
+        }
     }
 }
 
@@ -216,10 +297,11 @@ impl CloudChunkStore {
         format!("{source_root}/{rest}")
     }
 
-    /// Delete the local resume ledger after a successful publish (or before a
-    /// fresh link replaces an abandoned one).
-    pub fn clear_ledger(&self) {
-        let _ = std::fs::remove_file(&self.ledger);
+    /// Remove the local resume ledger after a successful publish (or before a
+    /// fresh link replaces an abandoned one). The JSONL file is append-only
+    /// during the link; publish is the compaction point.
+    pub async fn clear_ledger(&self) {
+        let _ = Ledger::clear(&self.ledger).await;
     }
 }
 
@@ -242,7 +324,7 @@ impl ChunkStore for CloudChunkStore {
         let source_root = self.s3.source_root(source);
         let prefix = format!("{source_root}/lineages/{}/links/", self.lineage);
         let objects = self.s3.list(&prefix).await.map_err(|e| e.to_string())?;
-        let ledger = Ledger::load(&self.ledger);
+        let ledger = Ledger::load(&self.ledger).await?;
         let mut chunks = HashMap::new();
         let mut published = false;
         for object in objects {
@@ -261,7 +343,7 @@ impl ChunkStore for CloudChunkStore {
                     // non-tail mismatch aborts and the tail gets a new key.
                     let digest = ledger
                         .entries
-                        .get(&index.to_string())
+                        .get(&index)
                         .filter(|entry| entry.generation == generation)
                         .map(|entry| entry.sha256.clone())
                         .unwrap_or_default();
@@ -290,16 +372,17 @@ impl ChunkStore for CloudChunkStore {
             .put_create_or_equal(&key, sealed)
             .await
             .map_err(|e| e.to_string())?;
-        let mut ledger = Ledger::load(&self.ledger);
-        ledger.entries.insert(
-            index.to_string(),
+        Ledger::append(
+            &self.ledger,
+            index,
             LedgerEntry {
                 generation,
                 sha256: digest_of(sealed),
                 size: sealed.len(),
             },
-        );
-        ledger.save(&self.ledger).map_err(|e| {
+        )
+        .await
+        .map_err(|e| {
             format!("the chunk was stored but the resume ledger could not be recorded: {e}")
         })?;
         let _ = chain;
@@ -323,7 +406,7 @@ impl ChunkStore for CloudChunkStore {
             .put_create_or_equal(&manifest_key(&link), payload)
             .await
             .map_err(|e| e.to_string())?;
-        self.clear_ledger();
+        self.clear_ledger().await;
         Ok(())
     }
 
@@ -632,6 +715,37 @@ pub fn next_sequence(anchor: &FsPath) -> Result<u64, String> {
     Ok(last_published(anchor)? + 1)
 }
 
+/// Seed the local anchor from the bucket's highest signed sequence. Re-adding
+/// a destination mints a new id and therefore a new local anchor path; the
+/// object layout is keyed by the destination's configured prefix, so without
+/// this a new destination would start at 1 and collide with existing links.
+/// Returns the last published sequence (local or bucket, whichever is higher).
+pub fn seed_sequence(anchor: &FsPath, bucket_max: u64) -> Result<u64, String> {
+    let local = last_published(anchor)?;
+    let last = local.max(bucket_max);
+    if last > local {
+        record_published(anchor, last)?;
+    }
+    Ok(last)
+}
+
+/// Validate the selected links, applying the anti-withholding anchor only to
+/// the newest restore point. An explicitly requested older chain is
+/// legitimate: the caller asked for it even though newer links exist.
+pub fn validate_sequence(
+    source: &str,
+    links: &[LinkInfo],
+    target: Option<&str>,
+    last_published: u64,
+) -> Result<(), String> {
+    if links.is_empty() {
+        return Err(format!("no backup of {source} is stored here"));
+    }
+    let summaries: Vec<ChainSummary> = links.iter().map(LinkInfo::summary).collect();
+    let anchor = if target.is_some() { 0 } else { last_published };
+    crate::buddy::client::validate_restore_sequence(source, &summaries, anchor)
+}
+
 /// Whether an interrupted send may resume the same link. Both snapshots must
 /// still exist with their recorded GUIDs, and the raw flag and dataset must
 /// match; otherwise the caller starts a fresh link (and the orphaned objects are
@@ -761,28 +875,107 @@ mod tests {
         );
     }
 
-    #[test]
-    fn the_ledger_only_authorizes_the_same_generation() {
-        let entry = LedgerEntry {
-            generation: 7,
-            sha256: "abc".into(),
-            size: 10,
-        };
-        let mut ledger = Ledger::default();
-        ledger.entries.insert("3".into(), entry);
+    #[tokio::test]
+    async fn the_ledger_round_trips_and_only_authorizes_the_same_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("source.ledger.jsonl");
+        Ledger::append(
+            &path,
+            3,
+            LedgerEntry {
+                generation: 7,
+                sha256: "abc".into(),
+                size: 10,
+            },
+        )
+        .await
+        .unwrap();
+        Ledger::append(
+            &path,
+            4,
+            LedgerEntry {
+                generation: 1,
+                sha256: "def".into(),
+                size: 11,
+            },
+        )
+        .await
+        .unwrap();
+        let ledger = Ledger::load(&path).await.unwrap();
         assert_eq!(
             ledger
                 .entries
-                .get("3")
+                .get(&3)
                 .filter(|e| e.generation == 7)
                 .map(|e| e.sha256.clone()),
             Some("abc".to_string())
         );
         assert!(ledger
             .entries
-            .get("3")
+            .get(&3)
             .filter(|e| e.generation == 8)
             .is_none());
+        assert_eq!(ledger.entries.get(&4).unwrap().sha256, "def");
+        // JSONL, not one JSON document: one line per append.
+        let raw = tokio::fs::read_to_string(&path).await.unwrap();
+        assert_eq!(raw.lines().count(), 2, "{raw}");
+    }
+
+    #[tokio::test]
+    async fn a_torn_final_ledger_line_is_tolerated() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("source.ledger.jsonl");
+        Ledger::append(
+            &path,
+            1,
+            LedgerEntry {
+                generation: 2,
+                sha256: "aa".into(),
+                size: 12,
+            },
+        )
+        .await
+        .unwrap();
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        std::io::Write::write_all(&mut file, br#"{"index":2,"generation":"#).unwrap();
+        let ledger = Ledger::load(&path).await.unwrap();
+        assert_eq!(ledger.entries.len(), 1);
+        assert!(ledger.entries.contains_key(&1));
+    }
+
+    #[test]
+    fn the_sequence_seeds_from_the_bucket_when_the_anchor_is_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let anchor = dir.path().join("x.seq");
+        assert_eq!(seed_sequence(&anchor, 7).unwrap(), 7);
+        assert_eq!(last_published(&anchor).unwrap(), 7);
+        // A higher local anchor wins over a lower bucket maximum.
+        record_published(&anchor, 9).unwrap();
+        assert_eq!(seed_sequence(&anchor, 5).unwrap(), 9);
+        assert_eq!(last_published(&anchor).unwrap(), 9);
+        // A higher bucket maximum moves the anchor forward.
+        let dir = tempfile::tempdir().unwrap();
+        let anchor = dir.path().join("y.seq");
+        record_published(&anchor, 3).unwrap();
+        assert_eq!(seed_sequence(&anchor, 8).unwrap(), 8);
+        assert_eq!(last_published(&anchor).unwrap(), 8);
+    }
+
+    #[test]
+    fn an_explicit_older_chain_skips_the_withholding_guard() {
+        let links = vec![
+            test_link("lin", 1, "a", ""),
+            test_link("lin", 2, "b", "snap-a"),
+        ];
+        // The latest restore point is 5 sequences behind: withheld/stale.
+        assert!(validate_sequence("tank/data", &links, None, 5).is_err());
+        // An explicit older chain is a deliberate choice.
+        assert!(validate_sequence("tank/data", &links, Some("a"), 5).is_ok());
+        // With no newer anchor the latest is fine.
+        assert!(validate_sequence("tank/data", &links, None, 2).is_ok());
     }
 
     #[test]

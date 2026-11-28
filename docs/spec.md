@@ -731,7 +731,8 @@ rsync and provider **file sync** remain `[OPEN]` below.
   `DELETE` requests cooperative cancellation (`409` when already finished).
   A send snapshots the dataset as `naslos-cloud-<token>-<UTC>` (one token per
   destination), uses raw `zfs send -w` for an encrypted source and refuses
-  anything that would stream plaintext. *(tests:
+  anything that would stream plaintext. `forceFull` discards an interrupted
+  resume link (state and its snapshot) and starts a new full. *(tests:
   `cloud::jobs::tests::a_second_send_for_the_same_pair_is_refused_but_a_different_pair_is_not`,
   `cloud::jobs::tests::cancel_is_final_and_unknown_ids_are_reported_separately`,
   `cloud::send::tests::the_manifest_preflight_refuses_a_stream_above_the_cap`,
@@ -747,8 +748,12 @@ rsync and provider **file sync** remain `[OPEN]` below.
   MUST NOT expose plaintext. Uploads use `If-None-Match: *` when the `/test`
   probe proves the bucket supports it; otherwise a HEAD plus byte-for-byte GET
   comparison (an ETag is not a portable digest) guards every write. Resume
-  uses a transient state file plus a local per-chunk ledger keyed by generation
-  and SHA-256, never an object listing alone. The endpoint is vetted at connect
+  uses a transient state file plus an append-only JSON-lines ledger (one fsynced
+  record per chunk, torn final line ignored, compacted when the manifest
+  publishes) keyed by generation and SHA-256, never an object listing alone. The
+  link sequence is monotonic per source: a new/absent local anchor is seeded
+  from the highest signed sequence in the bucket, so a re-created destination
+  cannot reuse a link path. The endpoint is vetted at connect
   time (custom resolver, no redirects, no proxy): public endpoints must be
   HTTPS on 443; RFC1918 endpoints require `cloudPrivateEndpoints`; the pod and
   service CIDRs, the node IP, loopback, link-local/metadata, CGNAT and ULA are
@@ -766,8 +771,13 @@ rsync and provider **file sync** remain `[OPEN]` below.
   GUID chain, LISTs every chunk before the first receive, streams each link
   once (no Buddy-style double download), asserts the target GUID after every
   receive, and needs a dataset key for a raw chain (the local Secret, or the
-  write-only `keyHex`; the replica key Secret is create-only). A failure
-  destroys the partial dataset unless `keepPartial` is set. Verify has
+  write-only `keyHex`; the replica key Secret is create-only). An explicit
+  `chain` restores/verifies an older point; the anti-withholding anchor guard
+  applies only to the implicit newest point. A failure destroys the partial
+  dataset unless `keepPartial` is set; `keepPartial` keeps only fully applied
+  links (a failed first full leaves no dataset), the job error says how many,
+  and the replica Secret is deleted only after a post-destroy listing proves the
+  dataset absent (a listing error keeps the key). Verify has
   `structure` (LIST + manifests + DEK unwrap, no egress) and `content`
   (download, decrypt, SHA-256) modes and reports every missing and corrupt
   index. Retention deletes whole lineages (manifest before chunks, newest link
@@ -2853,7 +2863,7 @@ operator and read-only users receive `403` on owner routes.
 - **DM-9 ConfigExport**: `{ "kind": "naslos-config-export", "schemaVersion": 1, "generatedAt", "naslosVersion", "baseDomain", "shares": [DM-4 without createdAt], "storageSchedules": [DM-8 without lastRun/lastResult/lastError/nextRun], "buddySchedules": [{ "id", "dataset", "source", "receivers": [], "cadence", "runAt", "pruneKeep", "enabled" }], "cloudDestinations": [{ "id", "name", "endpoint", "region", "bucket", "prefix", "pathStyle", "allowInsecureHttp", "enabled" }], "cloudSchedules": [{ "id", "dataset", "destinations": [], "cadence", "runAt", "keepLineages", "enabled" }], "domains": [{ "baseDomain", "dnsProvider", "providerConfig": {}, "acmeEmail", "environment", "primary", "sso", "appRecordsDdnsEntry": string|null }], "ddnsEntries": [{ "id", "provider", "zone", "record", "recordType", "ttl", "enabled", "providerConfig": {} }], "apps": [{ "name", "source", "channel", "chartVersion", "baseDomain", "exposure": { "subdomain", "tls", "auth", "localOnly", "protectedPaths": [], "internet", "service", "port", "scheme" }, "datasets": [], "privileged", "env": [{ "name", "secret" }], "values"?: {}, "redactedKeys": [], "valuesOmitted": bool }], "datasetRegistry": [{ "name", "hostPath", "shared", "warningAcknowledged" }] }`. Every section is an array, never `null`. No field may carry a credential value, credential Secret name, solver body, the Buddy identity/KEK or Kubernetes Secret data; `values` excludes the catalog's secret-marked keys at any depth, is omitted entirely when `valuesOmitted` is true, and `providerConfig` contains only keys the provider schema declares non-secret (free-form credential templates such as the generic DDNS `updateUrl`/`body` are omitted). Import consumes this exact shape (FR-CFG-04); app records are validated but reported skipped because installing them needs the catalog path.
 - **DM-10 ReplicationJob**: `{ "id", "source", "destination", "snapshot"?, "recursive": bool, "pruneKeep"?: number, "state": "running"|"succeeded"|"failed"|"cancelled", "startedAt", "finishedAt"?, "progress": { "bytes", "estimatedBytes" }, "incremental": bool, "estimatedBytes"?, "result"?: { "status": "replicated"|"up-to-date", "source", "destination", "snapshot", "baseSnapshot"?, "baseGUID"?, "toGUID"?, "incremental": bool, "recursive": bool, "bytes", "estimatedBytes", "prunedSnapshots", "retentionError"?, "durationSeconds" }, "error"? }`. Jobs are in memory; `snapshot` is empty until the job creates one; timestamps are RFC 3339 UTC (FR-REP-01/06).
 - **DM-11 CloudDestination / DestinationInput / Chain**: `Destination = { "id", "name", "endpoint", "region", "bucket", "prefix", "pathStyle": bool, "allowInsecureHttp": bool, "enabled": bool, "credentialsManaged": bool, "hasAccessKey": bool, "hasSecretKey": bool, "hasSessionToken": bool, "conditionalCreate": bool, "createdAt", "lastTestAt"?, "lastError"? }`; `DestinationInput` is the editable fields plus write-only `accessKeyId?`, `secretAccessKey?`, `sessionToken?`, `credentialsSecret?` (blank keeps; there is no clear-token flag in WP-1). `Chain = { "chain", "lineage", "kind": "full"|"incremental", "fromSnapshot", "toSnapshot", "fromGuid", "toGuid", "sequence", "createdAt", "chunks", "plainBytes", "raw": bool }` — `chain` is the link id used by restore/verify, `lineage` the full's id; `raw` means a dataset key is required to restore (FR-REP-11/12).
-- **DM-12 CloudJob / CloudSchedule**: `CloudJob = { "id", "kind": "send"|"restore"|"verify", "destination", "source", "dataset"?, "state": "running"|"succeeded"|"failed"|"cancelled", "startedAt", "finishedAt"?, "error"?, "progress": { "chunk", "totalChunks"?, "plainBytes", "uploaded", "skipped", "link"?, "links"? }, "result"?: { "chain", "snapshot", "kind", "plainBytes", "pruned"?, "missingIndices"?: { [chain]: number[] }, "badIndices"?: { [chain]: number[] } } }`; `CloudSchedule = { "id", "dataset", "destinations": [id], "cadence": "hourly"|"daily"|"weekly", "runAt"?, "keepLineages", "enabled", "lastRun"?, "lastResult"?, "lastError"?, "nextRun"?, "destinationResults"?: { [id]: "ok"|"failed: <category>" } }`. One running job per `(destination, source)`; restore also holds its target dataset (FR-REP-11/13).
+- **DM-12 CloudJob / CloudSchedule**: `CloudJob = { "id", "kind": "send"|"restore"|"verify", "destination", "source", "dataset"?, "state": "running"|"succeeded"|"failed"|"cancelled", "startedAt", "finishedAt"?, "error"?, "progress": { "chunk", "totalChunks"?, "plainBytes", "uploaded", "skipped", "link"?, "links"? }, "result"?: { "chain", "snapshot", "kind", "plainBytes", "pruned"?, "chunks"?, "missingIndices"?: { [chain]: number[] }, "badIndices"?: { [chain]: number[] } } }`; `CloudSchedule = { "id", "dataset", "destinations": [id], "cadence": "hourly"|"daily"|"weekly", "runAt"?, "keepLineages", "enabled", "lastRun"?, "lastResult"?, "lastError"?, "nextRun"?, "destinationResults"?: { [id]: "ok"|"failed: <category>" } }`. One running job per `(destination, source)`; restore also holds its target dataset (FR-REP-11/13).
 
 ---
 
@@ -3004,13 +3014,14 @@ there is no live cloud drill in CI):
 | --- | --- |
 | `cloud::net::tests::public_https_on_443_is_allowed_and_other_ports_are_not`, `metadata_loopback_cgnat_and_ula_are_always_refused`, `private_addresses_need_an_exact_cidr_and_port_match`, `the_node_ip_and_cluster_cidrs_win_over_a_broad_allowlist`, `public_hosts_can_never_use_plaintext_http`, `endpoint_parsing_rejects_credentials_paths_and_bad_schemes` | FR-REP-12 (connect-time address policy, port scoping, blocked CIDRs/node IP, SSRF parser) |
 | `cloud::store::tests::the_key_layout_is_the_documented_lineage_link_path`, `select_links_returns_the_guid_walk_oldest_first` | FR-REP-12 (object layout and signed GUID walk) |
-| `cloud::store::tests::the_ledger_only_authorizes_the_same_generation`, `resume_requires_the_same_snapshots_guids_and_raw_flag` | FR-REP-12 (resume ledger/generation, snapshot/GUID gating) |
+| `cloud::store::tests::the_ledger_round_trips_and_only_authorizes_the_same_generation`, `a_torn_final_ledger_line_is_tolerated`, `resume_requires_the_same_snapshots_guids_and_raw_flag` | FR-REP-12 (append-only resume ledger, torn tail, snapshot/GUID gating) |
+| `cloud::store::tests::the_sequence_seeds_from_the_bucket_when_the_anchor_is_absent`, `an_explicit_older_chain_skips_the_withholding_guard` | FR-REP-12/13 (monotonic sequence after a re-created destination; explicit older chain) |
 | `cloud::store::tests::retention_keeps_whole_newest_lineages_and_deletes_newest_link_first`, `retention_never_deletes_the_current_lineage`, `retention_only_deletes_a_lineage_with_a_newer_full` | FR-REP-13 (whole-lineage retention, newest-link-first, current-lineage/full protection) |
-| `cloud::restore::tests::the_preflight_reports_every_missing_and_bad_index`, `the_key_hex_is_strict` | FR-REP-13 (LIST preflight reports all missing/bad indices, key format) |
-| `cloud::send::tests::the_manifest_preflight_refuses_a_stream_above_the_cap`, `a_base_inside_the_lineage_is_used_until_full_every_or_size`, `the_newest_local_guid_that_is_published_is_the_base` | FR-REP-11/13 (manifest/stream caps, fullEvery and size-based full, GUID base) |
+| `cloud::restore::tests::the_preflight_reports_every_missing_and_bad_index`, `the_key_hex_is_strict`, `a_failed_cleanup_keeps_the_key_only_when_the_dataset_is_provably_absent`, `keep_partial_only_notes_fully_applied_links` | FR-REP-13 (LIST preflight, key format, post-destroy key decision, keepPartial wording) |
+| `cloud::send::tests::the_manifest_preflight_refuses_a_stream_above_the_cap`, `a_base_inside_the_lineage_is_used_until_full_every_or_size`, `the_newest_local_guid_that_is_published_is_the_base`, `force_full_discards_an_interrupted_resume`, `the_new_snapshot_guid_comes_from_the_post_create_listing` | FR-REP-11/13 (caps, fullEvery, GUID base, forceFull, post-create GUID) |
 | `cloud::jobs::tests::a_second_send_for_the_same_pair_is_refused_but_a_different_pair_is_not`, `a_second_restore_into_the_same_dataset_is_refused`, `cancel_is_final_and_unknown_ids_are_reported_separately`, `the_list_puts_running_jobs_first_and_caps_history` | FR-REP-11 (exclusions, cooperative cancel/final 409, running-first history) |
 | `cloud::tests::cloud_manifests_are_domain_separated_from_buddy`, `the_response_view_never_carries_a_secret_or_its_name`, `the_secret_data_reader_decodes_base64_and_string_data`, `bug_an_empty_key_is_refused_before_building_the_client` | FR-REP-11/12 (NCLOUD1 domain separation, redaction, empty-static-key refusal) |
-| `cloud::schedules::tests::per_destination_results_record_the_category`, `duplicate_destinations_are_collapsed`, `the_on_disk_shape_uses_the_api_field_names` | FR-REP-13 (fan-out results, dedupe, schedule store shape) |
+| `cloud::schedules::tests::per_destination_results_record_the_category`, `duplicate_destinations_are_collapsed`, `the_on_disk_shape_uses_the_api_field_names`, `server::config_import::tests::a_reordered_or_repeated_cloud_destination_set_is_the_same_schedule` | FR-REP-13 (fan-out results, dedupe, schedule store shape, order-independent import) |
 | `server::zfs::tests::a_running_cloud_send_blocks_destroying_its_source`, `server::system::tests::reboot_refuses_while_a_cloud_job_is_running` | FR-REP-13 (destroy/reboot conflict 409) |
 | `server::config_export::tests::export_shape_uses_an_allow_list_and_deterministic_arrays`, `secret_material_is_never_exported` | FR-CFG-01/03 (cloud sections and no credential/Secret-name export) |
 

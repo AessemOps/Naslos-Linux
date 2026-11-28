@@ -116,9 +116,7 @@ pub async fn enqueue(
     let links = super::store::select_links(&all, target).map_err(VerifyError::BadRequest)?;
     let anchor = AnchorPaths::new(&cloud.source_state_dir(&destination.id), &source).anchor;
     let last = super::store::last_published(&anchor).map_err(VerifyError::Upstream)?;
-    let summaries: Vec<crate::buddy::client::ChainSummary> =
-        links.iter().map(LinkInfo::summary).collect();
-    crate::buddy::client::validate_restore_sequence(&source, &summaries, last)
+    super::store::validate_sequence(&source, &links, target, last)
         .map_err(VerifyError::BadRequest)?;
 
     let id = jobs::random_job_id();
@@ -283,6 +281,10 @@ async fn run_verify_job(
         let mut link_bad: Vec<i64> = Vec::new();
         let mut link_missing: Vec<i64> = Vec::new();
         for chunk in &link.manifest.chunks {
+            if token.is_cancelled() {
+                job.finish(JobState::Cancelled, "cancelled".to_string(), None);
+                return;
+            }
             checked += 1;
             job.update_progress(|p| {
                 p.chunk = checked;
@@ -350,13 +352,14 @@ async fn run_verify_job(
         }
     }
 
-    let first = links.first();
+    // The target restore point is the last link in the oldest-first sequence.
+    let target = target_link(&links);
     let result = JobResult {
-        chain: first.map(|l| l.chain.clone()).unwrap_or_default(),
-        snapshot: first
+        chain: target.map(|l| l.chain.clone()).unwrap_or_default(),
+        snapshot: target
             .map(|l| l.manifest.to_snapshot.clone())
             .unwrap_or_default(),
-        kind: first
+        kind: target
             .map(|l| {
                 if l.incremental() {
                     "incremental"
@@ -383,9 +386,24 @@ async fn run_verify_job(
     }
 }
 
+/// The verified restore point is the newest link in the apply sequence.
+fn target_link(links: &[LinkInfo]) -> Option<&LinkInfo> {
+    links.last()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_result_target_is_the_newest_link() {
+        let links = vec![
+            crate::cloud::store::test_link("lin", 1, "a", ""),
+            crate::cloud::store::test_link("lin", 2, "b", "snap-a"),
+        ];
+        assert_eq!(target_link(&links).unwrap().chain, "b");
+        assert!(target_link(&[]).is_none());
+    }
 
     #[test]
     fn the_mode_is_strict_and_defaults_to_structure() {

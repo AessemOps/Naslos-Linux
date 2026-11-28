@@ -360,17 +360,25 @@ Rules:
 - `keepLineages` (default 2, max 100) deletes whole old lineages only, newest
   link first, manifest before chunks. Local `naslos-cloud-` snapshots for that
   destination are pruned to the newest N.
+- `forceFull: true` discards an interrupted resume link (its transient state and
+  the snapshot that link created) and starts a new full lineage.
 - Restore only creates a new dataset, preflights every chunk with a LIST,
   streams each link once, and asserts the target GUID after every receive. On
   failure the partial dataset is destroyed unless `keepPartial` is true; a raw
-  restore writes a create-only replica key Secret.
+  restore writes a create-only replica key Secret. `keepPartial` keeps only the
+  fully applied links: a failed first full leaves no dataset (ZFS discards it),
+  so there is nothing to keep. The job error reports how many links were kept.
+- An explicit `chain` restores/verifies that older restore point even when
+  newer links exist; the anti-withholding anchor check applies only to the
+  implicit newest restore point.
 - Scheduled runs record `destinationResults` values `ok` or
   `failed: <category>`, emit `backup_success`/`backup_failure` with the `cloud`
   tag, and write an audit record. The scheduler runs in the API with a startup
   catch-up and a tick (`cloud.schedulerIntervalMs`).
 
-Job result shape: `{chain, snapshot, kind, plainBytes, pruned?,
-missingIndices?, badIndices?}`. `GET /api/cloud/jobs/{id}` returns the job object
+Job result shape: `{chain, snapshot, kind, plainBytes, pruned?, chunks?,
+missingIndices?, badIndices?}`; `chunks` is the real link chunk count (the
+notification uses it). `GET /api/cloud/jobs/{id}` returns the job object
 directly (`{id, kind, destination, source, dataset?, state, startedAt,
 finishedAt?, error?, progress:{chunk, totalChunks?, plainBytes, uploaded,
 skipped, link?, links?}, result?}`).

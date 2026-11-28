@@ -14,7 +14,7 @@ use crate::cloud::send::{self, SendParams, StartError};
 use crate::cloud::verify::{self, VerifyError, VerifyRequest};
 use crate::cloud::{
     self, credential_flags, delete_managed_credentials, identity_path, load_credentials,
-    managed_secret_name, normalize_destination, DestinationInput, DestinationView,
+    managed_secret_name, normalize_destination, Destination, DestinationInput, DestinationView,
 };
 use crate::json;
 use crate::state::AppState;
@@ -227,6 +227,10 @@ async fn upsert_destination(
         destination.has_session_token = flags.2;
     }
 
+    // Switching from a Naslos-managed inline Secret to an operator Secret (or
+    // a different Secret) must not leave the old managed credential behind.
+    let old_managed_secret = stale_managed_secret(existing.as_ref(), &destination);
+
     // A changed endpoint/bucket or new credentials invalidate the capability
     // probe; the next /test re-learns it.
     if existing.as_ref().is_some_and(|old| {
@@ -261,6 +265,14 @@ async fn upsert_destination(
         }
         return intern(e);
     }
+    if let Some(stale) = old_managed_secret {
+        let stale = Destination {
+            credentials_managed: true,
+            credentials_secret: stale,
+            ..Default::default()
+        };
+        delete_managed_credentials(state, &stale).await;
+    }
     let status = if creating {
         StatusCode::CREATED
     } else {
@@ -270,6 +282,73 @@ async fn upsert_destination(
         status,
         serde_json::json!({ "destination": DestinationView::from(&destination) }),
     )
+}
+
+/// The old managed Secret to remove after an update: only when the previous
+/// record was Naslos-managed and the new record is not pointing at that same
+/// managed Secret. An operator Secret is never deleted here.
+fn stale_managed_secret(old: Option<&Destination>, new: &Destination) -> Option<String> {
+    let old = old?;
+    if !old.credentials_managed || old.credentials_secret.is_empty() {
+        return None;
+    }
+    // The new record points at the same Secret (managed rewrite, or an
+    // operator reusing that exact name): it is still in use.
+    if new.credentials_secret == old.credentials_secret {
+        return None;
+    }
+    Some(old.credentials_secret.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn managed(name: &str) -> Destination {
+        Destination {
+            id: "abc".into(),
+            credentials_managed: true,
+            credentials_secret: name.into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn switching_from_managed_to_an_operator_secret_removes_the_old_one() {
+        let old = managed("naslos-cloud-cred-abc");
+        let mut new = old.clone();
+        new.credentials_managed = false;
+        new.credentials_secret = "naslos-cloud-operator".into();
+        assert_eq!(
+            stale_managed_secret(Some(&old), &new),
+            Some("naslos-cloud-cred-abc".to_string())
+        );
+    }
+
+    #[test]
+    fn rewriting_the_same_managed_secret_keeps_it() {
+        let old = managed("naslos-cloud-cred-abc");
+        let mut new = old.clone();
+        new.name = "renamed".into();
+        assert_eq!(stale_managed_secret(Some(&old), &new), None);
+    }
+
+    #[test]
+    fn an_operator_reusing_the_managed_secret_name_keeps_it() {
+        let old = managed("naslos-cloud-cred-abc");
+        let mut new = old.clone();
+        new.credentials_managed = false;
+        assert_eq!(stale_managed_secret(Some(&old), &new), None);
+    }
+
+    #[test]
+    fn an_operator_managed_secret_is_never_removed() {
+        let mut old = managed("naslos-cloud-operator");
+        old.credentials_managed = false;
+        let new = old.clone();
+        assert_eq!(stale_managed_secret(Some(&old), &new), None);
+        assert_eq!(stale_managed_secret(None, &new), None);
+    }
 }
 
 pub async fn destination_delete(

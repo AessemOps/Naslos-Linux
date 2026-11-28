@@ -98,7 +98,10 @@ naslos-cloud-cred-<destination id>
   no clear-token flag.
 - To manage the Secret yourself, create it (any name starting with
   `naslos-cloud-`) and pass `credentialsSecret`. Naslos then never writes or
-  deletes it; the destination is `credentialsManaged: false`.
+  deletes it; the destination is `credentialsManaged: false`. Switching a
+  destination from managed inline credentials to an operator Secret deletes the
+  old `naslos-cloud-cred-<id>` Secret after the new record is saved (unless the
+  operator reuses that exact name).
 - Responses and `/api/system/config/export` expose only `hasAccessKey`,
   `hasSecretKey` and `hasSessionToken`. Deleting a destination deletes its
   Secret only when Naslos created it and the managed-by label is still present.
@@ -167,6 +170,11 @@ The job:
 5. Prunes old lineages after a successful publish (`keepLineages`, default 2)
    and prunes local `naslos-cloud-` snapshots for that destination.
 
+`forceFull: true` throws away an interrupted resume link (its state and the
+snapshot that link created) and starts a new full lineage. A deterministic
+preflight failure (the manifest/stream cap) also abandons that link instead of
+leaving state a later run would silently reuse.
+
 One job per `(destination, source)` runs at a time; a second one is `409`. Jobs
 are in memory; a restart loses progress but not a published chain. Resume state
 lives on the state PVC (`CLOUD_SEQUENCES_DIR`); it holds the in-flight chain DEK
@@ -179,6 +187,12 @@ exist. The job walks the signed chain from its full link to the requested link,
 LISTs every chunk before the first receive, streams each link once, and asserts
 the target snapshot GUID after every receive. `chain` is the link id from
 `GET /api/cloud/chains`; omitted means the newest restore point's full sequence.
+
+An explicit `chain` restores that older restore point even when newer links
+exist; the stale-anchor/"withholding" guard applies only to the implicit newest
+restore point. `keepPartial` keeps only the fully applied links: a failed first
+full leaves no dataset (ZFS discards it), so there is nothing to keep; the job
+error states how many links were kept.
 
 A raw chain (an encrypted source) needs the dataset key:
 
@@ -208,6 +222,9 @@ when either is non-empty. Neither writes to ZFS.
 - Deletion is lineage-safe: an old lineage is deleted only when a newer lineage
   has a published full; links are deleted newest-first and the manifest before
   its chunks. Unreferenced chunks older than 24 h are swept.
+- Resume uses an append-only JSON-lines ledger (one record per chunk, fsynced)
+  and is compacted away when the manifest publishes. A torn final line is
+  ignored; a corrupt earlier line fails the attempt closed.
 - A link's manifest carries one entry per ~1 MiB chunk. The send preflight
   refuses a stream whose manifest is estimated above 128 MiB and any single
   link above the agent's 1 TiB receive cap, so an unrestorable chain is never
@@ -288,6 +305,12 @@ itself: anyone with it and the bucket can decrypt that dataset.
 Any NAS with the identity file/KEK and the dataset key can read the bucket; the
 destination id and node name are not part of the signed material. Restoring the
 same bucket into a different Naslos install is supported by design.
+
+A re-created destination gets a new server id and therefore a new local
+sequence anchor. Before the next send, the API seeds that anchor from the
+highest signed sequence it finds in the bucket for the source, so a new id can
+never overwrite an existing link path or reuse a sequence. When the local anchor
+is absent, the bucket is the source of truth.
 
 ## Drill
 

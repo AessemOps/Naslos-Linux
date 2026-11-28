@@ -70,6 +70,9 @@ pub struct JobResult {
     pub plain_bytes: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pruned: Option<usize>,
+    /// Chunks in the link (the notification and the UI use the real count).
+    #[serde(default)]
+    pub chunks: i64,
     #[serde(
         rename = "missingIndices",
         default,
@@ -281,11 +284,13 @@ impl CloudJobManager {
             if p.state != JobState::Running || p.dataset.is_empty() {
                 continue;
             }
-            if p.kind == JobKind::Restore && p.dataset == name {
+            if p.kind == JobKind::Restore
+                && (p.dataset == name || p.dataset.starts_with(&format!("{name}/")))
+            {
                 return Some(p);
             }
-            // A send reads the source dataset (and its children) and it would
-            // be destroyed mid-stream.
+            // A send reads the job's dataset; destroying it or an ancestor
+            // would truncate the stream.
             if p.kind == JobKind::Send
                 && (p.dataset == name || p.dataset.starts_with(&format!("{name}/")))
             {

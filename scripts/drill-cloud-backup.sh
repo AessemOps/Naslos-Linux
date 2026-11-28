@@ -56,15 +56,21 @@ RESTORE_DATASET=""
 cleanup() {
   set +e
   say "cleanup"
-  if [[ -n "$DEST_ID" ]]; then
-    api DELETE "/api/cloud/destinations/${DEST_ID}" >/dev/null 2>&1
+  if [[ "${KEEP:-0}" != "1" ]]; then
+    if [[ -n "$DEST_ID" ]]; then
+      api DELETE "/api/cloud/destinations/${DEST_ID}" >/dev/null 2>&1
+    fi
+    if [[ -n "$RESTORE_DATASET" ]]; then
+      api DELETE "/api/datasets?name=${RESTORE_DATASET//\//%2F}&recursive=true&confirm=${RESTORE_DATASET//\//%2F}" >/dev/null 2>&1
+    fi
+    if [[ -n "$SOURCE_DATASET" ]]; then
+      api DELETE "/api/datasets?name=${SOURCE_DATASET//\//%2F}&recursive=true&confirm=${SOURCE_DATASET//\//%2F}" >/dev/null 2>&1
+    fi
+  else
+    say "KEEP=1: leaving the drill destination, datasets and MinIO in place"
   fi
-  if [[ -n "$RESTORE_DATASET" ]]; then
-    api DELETE "/api/datasets?name=${RESTORE_DATASET//\//%2F}&recursive=true&confirm=${RESTORE_DATASET//\//%2F}" >/dev/null 2>&1
-  fi
-  if [[ -n "$SOURCE_DATASET" ]]; then
-    api DELETE "/api/datasets?name=${SOURCE_DATASET//\//%2F}&recursive=true&confirm=${SOURCE_DATASET//\//%2F}" >/dev/null 2>&1
-  fi
+  # The address-policy and drill-egress changes are never kept: a widened
+  # allowlist must not outlive the drill.
   if [[ "$API_PATCHED" == "1" ]]; then
     say "restoring the API cloud address policy"
     kubectl -n "$NAMESPACE" set env deploy/naslos-api \
@@ -73,7 +79,7 @@ cleanup() {
     kubectl -n "$NAMESPACE" rollout status deploy/naslos-api --timeout=300s >/dev/null 2>&1
   fi
   kubectl -n "$NAMESPACE" delete networkpolicy naslos-api-cloud-egress-drill --ignore-not-found >/dev/null 2>&1
-  if [[ "$MINIO_CREATED" == "1" ]]; then
+  if [[ "${KEEP:-0}" != "1" && "$MINIO_CREATED" == "1" ]]; then
     kubectl -n "$APPS_NAMESPACE" delete deploy "$MINIO_NAME" --ignore-not-found >/dev/null 2>&1
     kubectl -n "$APPS_NAMESPACE" delete svc "$MINIO_NAME" --ignore-not-found >/dev/null 2>&1
     kubectl -n "$APPS_NAMESPACE" delete secret "$MINIO_NAME" --ignore-not-found >/dev/null 2>&1

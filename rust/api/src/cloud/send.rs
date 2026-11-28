@@ -257,7 +257,23 @@ async fn run_send_job(
         finish_failed!("cloud backup is not enabled");
     };
     let (resume_path, _anchor) = cloud.source_state_paths(&destination.id, &source);
-    let mut resume_state = load_resume(&resume_path, &destination.id, &source, &params.dataset);
+    let ledger_path = ledger_path_for(&cloud.source_state_dir(&destination.id), &source);
+    let (mut resume_state, discarded) = resume_disposition(
+        load_resume(&resume_path, &destination.id, &source, &params.dataset),
+        params.force_full,
+    );
+    if let Some(resume) = discarded {
+        // forceFull is an explicit "start over": the old link cannot be
+        // continued, so remove its snapshot and transient state now.
+        abandon_link(
+            &agent,
+            &params.dataset,
+            &resume_path,
+            &ledger_path,
+            &resume.to_snapshot,
+        )
+        .await;
+    }
 
     // An encrypted source is always sent raw (`-w`): the bucket then holds the
     // ZFS ciphertext and no plaintext, and no dataset key is needed to read it
@@ -294,16 +310,11 @@ async fn run_send_job(
 
     // Resume only when both snapshots still exist with the recorded GUIDs,
     // the raw flag matches, and the chain state fits.
-    let snapshots = agent
-        .snapshots_with_guid_shallow(&params.dataset)
-        .await
-        .unwrap_or_default();
-    let snapshot_guid = |name: &str| {
-        snapshots
-            .iter()
-            .find(|s| s.name == name)
-            .map(|s| s.guid.clone())
+    let snapshots = match agent.snapshots_with_guid_shallow(&params.dataset).await {
+        Ok(snapshots) => snapshots,
+        Err(e) => finish_failed!(format!("listing snapshots of {}: {e}", params.dataset)),
     };
+    let snapshot_guid = |name: &str| snapshot_guid_of(&snapshots, name);
     if let Some(resume) = &resume_state {
         let to_guid = snapshot_guid(&resume.to_snapshot);
         let from_name = if resume.from_snapshot.is_empty() {
@@ -337,15 +348,22 @@ async fn run_send_job(
     let local_guids: std::collections::HashSet<String> =
         snapshots.iter().map(|s| s.guid.clone()).collect();
 
+    // The destination id is not part of the signed material, so re-adding a
+    // destination mints a new local anchor path. Seed it from the highest
+    // signed sequence in the bucket before choosing the next sequence; never
+    // reuse a sequence (that would overwrite a link path on create-only PUT).
+    let anchor_paths = AnchorPaths::new(&cloud.source_state_dir(&destination.id), &source);
+    let bucket_max = links.iter().map(|link| link.sequence).max().unwrap_or(0);
+    if let Err(e) = store::seed_sequence(&anchor_paths.anchor, bucket_max) {
+        finish_failed!(e);
+    }
+
     // A crash between publishing the manifest and deleting the resume state
     // must not publish the chain twice. The signed listing is authoritative.
     if let Some(resume) = &resume_state {
         if let Some(link) = links.iter().find(|l| l.chain == resume.chain.chain) {
             let _ = std::fs::remove_file(&resume_path);
-            let _ = std::fs::remove_file(ledger_path_for(
-                &cloud.source_state_dir(&destination.id),
-                &source,
-            ));
+            let _ = std::fs::remove_file(&ledger_path);
             prune_local_snapshots(
                 &agent,
                 &params.dataset,
@@ -368,6 +386,7 @@ async fn run_send_job(
                     .to_string(),
                     plain_bytes: link.plain_bytes(),
                     pruned: Some(0),
+                    chunks: link.manifest.chunks.len() as i64,
                     ..Default::default()
                 }),
             );
@@ -432,10 +451,37 @@ async fn run_send_job(
         if let Err(e) = agent.create_snapshot(&params.dataset, &snapshot).await {
             finish_failed!(format!("snapshotting {}: {e}", params.dataset));
         }
-        match snapshot_guid(&snapshot) {
+        // The pre-create listing cannot contain this snapshot. Re-list after
+        // the create, like Buddy does, and fail (rather than treat it as
+        // missing) when the listing itself fails.
+        let after = match agent.snapshots_with_guid_shallow(&params.dataset).await {
+            Ok(after) => after,
+            Err(e) => {
+                abandon_link(
+                    &agent,
+                    &params.dataset,
+                    &resume_path,
+                    &ledger_path,
+                    &snapshot,
+                )
+                .await;
+                finish_failed!(format!(
+                    "listing snapshots after creating {}@{snapshot}: {e}",
+                    params.dataset
+                ));
+            }
+        };
+        match snapshot_guid_of(&after, &snapshot) {
             Some(guid) if !guid.is_empty() => guid,
             _ => {
-                let _ = agent.destroy_snapshot(&params.dataset, &snapshot).await;
+                abandon_link(
+                    &agent,
+                    &params.dataset,
+                    &resume_path,
+                    &ledger_path,
+                    &snapshot,
+                )
+                .await;
                 finish_failed!(format!(
                     "the agent did not report a GUID for {}@{snapshot}; refusing to publish a chain that cannot be walked",
                     params.dataset
@@ -456,16 +502,29 @@ async fn run_send_job(
     {
         Ok(bytes) => bytes,
         Err(e) => {
-            if resume_state.is_none() {
-                let _ = agent.destroy_snapshot(&params.dataset, &snapshot).await;
-            }
+            // A deterministic preflight failure cannot be retried with the
+            // same snapshot; abandon the link instead of leaving state that a
+            // later run would silently reuse.
+            abandon_link(
+                &agent,
+                &params.dataset,
+                &resume_path,
+                &ledger_path,
+                &snapshot,
+            )
+            .await;
             finish_failed!(format!("estimating the stream: {e}"));
         }
     };
     if let Err(e) = preflight_estimate(&params.dataset, expected) {
-        if resume_state.is_none() {
-            let _ = agent.destroy_snapshot(&params.dataset, &snapshot).await;
-        }
+        abandon_link(
+            &agent,
+            &params.dataset,
+            &resume_path,
+            &ledger_path,
+            &snapshot,
+        )
+        .await;
         finish_failed!(e);
     }
     job.update_progress(|p| {
@@ -515,7 +574,6 @@ async fn run_send_job(
     } else {
         params.keep_lineages
     };
-    let anchor_paths = AnchorPaths::new(&cloud.source_state_dir(&destination.id), &source);
     let sequence = match store::next_sequence(&anchor_paths.anchor) {
         Ok(sequence) => sequence,
         Err(e) => finish_failed!(e),
@@ -597,10 +655,7 @@ async fn run_send_job(
         }
         None => {
             let _ = std::fs::remove_file(&resume_path);
-            let _ = std::fs::remove_file(source_state_ledger(
-                &cloud.source_state_dir(&destination.id),
-                &source,
-            ));
+            let _ = std::fs::remove_file(&ledger_path);
             prune_local_snapshots(&agent, &params.dataset, &source, &destination.id, keep).await;
             let result_view = JobResult {
                 chain: result.chain.clone(),
@@ -613,6 +668,7 @@ async fn run_send_job(
                 .to_string(),
                 plain_bytes: result.plain_bytes,
                 pruned: Some(result.pruned_chains),
+                chunks: result.chunks as i64,
                 ..Default::default()
             };
             job.finish(JobState::Succeeded, String::new(), Some(result_view));
@@ -629,8 +685,44 @@ async fn run_send_job(
     }
 }
 
-fn source_state_ledger(dir: &std::path::Path, source: &str) -> std::path::PathBuf {
-    AnchorPaths::new(dir, source).ledger
+/// forceFull must discard an interrupted link rather than continue it.
+fn resume_disposition(
+    resume: Option<SendResume>,
+    force_full: bool,
+) -> (Option<SendResume>, Option<SendResume>) {
+    if force_full {
+        (None, resume)
+    } else {
+        (resume, None)
+    }
+}
+
+fn snapshot_guid_of(snaps: &[crate::agent::SnapshotInfo], name: &str) -> Option<String> {
+    snaps
+        .iter()
+        .find(|snapshot| snapshot.name == name)
+        .map(|snapshot| snapshot.guid.clone())
+}
+
+/// Destroy a snapshot this link created and remove its transient state. Used
+/// for forceFull, deterministic preflight failures, and a missing GUID.
+async fn abandon_link(
+    agent: &crate::agent::Client,
+    dataset: &str,
+    resume_path: &std::path::Path,
+    ledger_path: &std::path::Path,
+    snapshot: &str,
+) {
+    if !snapshot.is_empty() {
+        if let Err(e) = agent.destroy_snapshot(dataset, snapshot).await {
+            tracing::warn!(
+                "cloud send: cannot destroy abandoned snapshot {dataset}@{snapshot}: {e}"
+            );
+        }
+    }
+    for path in [resume_path, ledger_path] {
+        let _ = tokio::fs::remove_file(path).await;
+    }
 }
 
 fn load_resume(
@@ -806,6 +898,44 @@ mod tests {
         assert!(valid_keep_lineages(100).is_ok());
         assert!(valid_keep_lineages(0).is_err());
         assert!(valid_keep_lineages(101).is_err());
+    }
+
+    #[test]
+    fn force_full_discards_an_interrupted_resume() {
+        let resume = SendResume {
+            destination: "d".into(),
+            source: "tank/data".into(),
+            dataset: "tank/data".into(),
+            to_snapshot: "naslos-cloud-x-1".into(),
+            ..Default::default()
+        };
+        let (kept, discarded) = resume_disposition(Some(resume.clone()), true);
+        assert!(kept.is_none());
+        assert_eq!(
+            discarded.unwrap().to_snapshot,
+            "naslos-cloud-x-1".to_string()
+        );
+        let (kept, discarded) = resume_disposition(Some(resume), false);
+        assert!(kept.is_some());
+        assert!(discarded.is_none());
+    }
+
+    #[test]
+    fn the_new_snapshot_guid_comes_from_the_post_create_listing() {
+        let before = vec![crate::agent::SnapshotInfo {
+            dataset: "tank/data".into(),
+            name: "old".into(),
+            guid: "g0".into(),
+            created: String::new(),
+        }];
+        let after = vec![crate::agent::SnapshotInfo {
+            dataset: "tank/data".into(),
+            name: "new".into(),
+            guid: "g1".into(),
+            created: String::new(),
+        }];
+        assert_eq!(snapshot_guid_of(&before, "new"), None);
+        assert_eq!(snapshot_guid_of(&after, "new").as_deref(), Some("g1"));
     }
 
     #[test]
