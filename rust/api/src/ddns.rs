@@ -234,6 +234,31 @@ pub fn verify_secret_copy(
     Ok(())
 }
 
+/// Whether a keys-namespace Secret covers every key an apps-namespace copy
+/// holds, which is the only safe condition for retiring that copy.
+///
+/// A missing key means the keys copy never received that field (an entry saved
+/// while the migration was failing), so the apps copy is still the only copy of
+/// it. A *differing* value does not: the keys copy is then newer, because every
+/// write after the upgrade targets it and nothing writes the apps copy again.
+/// Requiring equal values would therefore strand a rotated credential in the
+/// apps namespace forever.
+pub fn keys_copy_covers_source(
+    source: &serde_json::Value,
+    target: &serde_json::Value,
+) -> Result<(), String> {
+    let source = raw_secret_data(Some(source));
+    let target = raw_secret_data(Some(target));
+    for key in source.keys() {
+        if !target.contains_key(key) {
+            return Err(format!(
+                "copy verification failed: key {key:?} is missing from the keys-namespace Secret"
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// One dynamic-DNS record (never holds credential values).
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Entry {
@@ -882,10 +907,15 @@ impl Manager {
                 // apps copy when the keys copy supersedes it key for key.
                 let source = apps_copy.ok_or_else(|| "source Secret disappeared".to_string())?;
                 let target = keys_copy.ok_or_else(|| "keys copy disappeared".to_string())?;
-                verify_secret_copy(&raw_secret_data(Some(&source)), &target).map_err(|e| {
+                // A differing value means the keys copy is newer (every write
+                // after the upgrade targets it), so only a missing key blocks
+                // the delete. Saving the entry cannot fix a missing key, since
+                // the write path only knows the keys namespace; re-enter the
+                // old value or delete the apps copy by hand.
+                keys_copy_covers_source(&source, &target).map_err(|e| {
                     format!(
-                        "keeping the apps-namespace copy: the keys-namespace Secret does not \
-                         supersede it ({e}); save the entry's credentials to rewrite it"
+                        "keeping the apps-namespace copy: the keys-namespace Secret is missing \
+                         a credential field ({e}); re-enter it on the entry to finish the move"
                     )
                 })?;
                 kube.delete("secret", name, &self.apps_namespace).await?;
@@ -1559,13 +1589,24 @@ mod tests {
         // holds a field the keys copy lacks. Deleting it would lose that field.
         let apps = secret_with(&[("username", "u"), ("password", "p")], true);
         let partial = secret_with(&[("username", "u")], true);
-        let error = verify_secret_copy(&raw_secret_data(Some(&apps)), &partial).unwrap_err();
+        let error = keys_copy_covers_source(&apps, &partial).unwrap_err();
         assert!(error.contains("password"), "{error}");
 
         // The reverse is fine: the apps copy needs no extra keys.
         let full = secret_with(&[("username", "u")], true);
         let superset = secret_with(&[("username", "u"), ("password", "p")], true);
-        assert!(verify_secret_copy(&raw_secret_data(Some(&full)), &superset).is_ok());
+        assert!(keys_copy_covers_source(&full, &superset).is_ok());
+    }
+
+    #[test]
+    fn a_rotated_value_still_counts_as_covered() {
+        // A differing value means the keys copy is newer: every write after the
+        // upgrade targets it, so requiring equality would strand the rotated
+        // plaintext copy in the apps namespace forever.
+        let apps = secret_with(&[("username", "u"), ("password", "old")], true);
+        let newer = secret_with(&[("username", "u"), ("password", "new")], true);
+        assert!(keys_copy_covers_source(&apps, &newer).is_ok());
+        assert!(verify_secret_copy(&raw_secret_data(Some(&apps)), &newer).is_err());
     }
 
     #[test]

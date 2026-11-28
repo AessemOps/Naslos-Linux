@@ -212,11 +212,13 @@ before the first credential read) the API migrates each entry: when the Secret
 exists only in the apps namespace it is copied into the key-custody namespace
 (create-only, same keys), the copy is verified, and only then is the
 apps-namespace copy deleted — and only when Naslos created it (the managed
-label or the generated name) *and* the keys copy holds every key/value of it.
-A partial keys copy (for example an entry saved while the migration was failing)
-therefore never retires the complete apps copy; saving the entry's credentials
-again rewrites the keys Secret and the next start finishes the move. A Secret
-you provisioned yourself is copied byte for byte but left in place. The
+label or the generated name) *and* the keys copy holds every credential *key*
+of it. A keys copy missing a field (an entry saved while the migration was
+failing) therefore never retires the complete apps copy; re-enter that field on
+the entry and the next start finishes the move. A different *value* does not
+block the delete: every write after the upgrade targets the keys namespace, so
+a differing value is the newer one and the apps copy is stale plaintext. A
+Secret you provisioned yourself is copied byte for byte but left in place. The
 migration is idempotent, logs entry ids and names but never values, and a
 keys-namespace copy wins, so a re-run or a partial failure is safe. Check the result with
 `kubectl -n naslos-keys get secret -l naslos.io/ddns-entry`. Nothing is

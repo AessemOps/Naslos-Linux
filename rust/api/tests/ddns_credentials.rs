@@ -267,9 +267,9 @@ async fn a_second_run_is_a_no_op() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Finding (review): a keys-namespace Secret that exists but does not hold every
-/// value of the apps copy must NOT retire the apps copy, or the last complete
-/// credential copy is lost.
+/// Finding (review): a keys-namespace Secret that is missing a field the apps
+/// copy holds must NOT retire the apps copy, or the last complete credential
+/// copy is lost.
 #[tokio::test]
 #[allow(clippy::await_holding_lock)]
 async fn a_partial_keys_copy_keeps_the_complete_apps_copy() {
@@ -369,5 +369,34 @@ async fn a_binary_value_is_copied_byte_for_byte() {
     let written = read(&dir.join("state").join("written.json")).expect("a keys-namespace write");
     let object: Value = serde_json::from_str(&written).unwrap();
     assert_eq!(object["data"]["blob"], binary);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Finding (review): a differing value means the keys copy is newer (the entry
+/// was re-saved with a rotated credential), so the apps copy must be retired
+/// rather than stranded where any chart can read the old plaintext.
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn a_rotated_value_retires_the_stale_apps_copy() {
+    let _guard = KUBECTL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let previous = std::env::var_os("KUBECTL_BIN");
+    use base64::Engine;
+    let encode = |value: &str| base64::engine::general_purpose::STANDARD.encode(value.as_bytes());
+    let mut apps = secret_json(SECRET, APPS_NS, true);
+    apps["data"]["password"] = Value::String(encode("old-password"));
+    let mut keys = secret_json(SECRET, KEYS_NS, true);
+    keys["data"]["password"] = Value::String(encode("rotated-password"));
+    let dir = fake_cluster(SECRET, Some(apps), Some(keys));
+    let manager = manager_with_stub(&dir.join("kubectl"));
+    manager.store().put(entry_with(SECRET)).unwrap();
+    manager.migrate_credentials().await;
+    restore_env(previous);
+
+    assert!(
+        dir.join("state").join("deleted.log").exists(),
+        "a newer keys copy must retire the stale apps copy"
+    );
+    assert!(!state_path(&dir, APPS_NS, SECRET).exists());
+    assert!(state_path(&dir, KEYS_NS, SECRET).exists());
     let _ = std::fs::remove_dir_all(&dir);
 }
