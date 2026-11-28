@@ -192,6 +192,21 @@ impl S3Storage {
                 },
                 message: format!("building the S3 client: {error}"),
             })?;
+        // A literal address never reaches the DNS resolver, so enforce the
+        // private allowlist here as well (a hostname is vetted by the resolver).
+        if let Ok(ip) = endpoint
+            .host
+            .trim_matches(['[', ']'])
+            .parse::<std::net::IpAddr>()
+        {
+            if !config.address_allowed(&ip, endpoint.port, endpoint.plaintext) {
+                return Err(S3Error {
+                    category: Category::BlockedAddress,
+                    message: "building the S3 client: the endpoint address is not allowed (public endpoints need https on 443; private endpoints need cloudPrivateEndpoints)"
+                        .to_string(),
+                });
+            }
+        }
         let client = http_client(&endpoint, config).map_err(|error| S3Error {
             category: Category::Network,
             message: format!("building the S3 client: {error}"),
@@ -578,6 +593,27 @@ mod tests {
         let err = S3Error::new("put", Category::Auth);
         assert_eq!(err.message, "put failed (auth)");
         assert!(!err.message.contains("http"));
+    }
+
+    #[test]
+    fn a_private_literal_endpoint_is_checked_before_the_client_is_built() {
+        let destination = Destination {
+            endpoint: "https://192.168.1.50:9000".into(),
+            bucket: "naslos-backups".into(),
+            region: "us-east-1".into(),
+            path_style: true,
+            ..Default::default()
+        };
+        let credentials = Credentials {
+            access_key_id: "AKIA".into(),
+            secret_access_key: "secret".into(),
+            session_token: None,
+        };
+        let error = match S3Storage::build(&destination, &credentials, &NetConfig::default()) {
+            Ok(_) => panic!("an unlisted private literal must be refused"),
+            Err(error) => error,
+        };
+        assert_eq!(error.category, Category::BlockedAddress);
     }
 
     #[test]

@@ -302,15 +302,25 @@ pub async fn preflight_sequence(
             &link.chain,
         );
         let objects = s3.list(&format!("{link_dir}/chunks/")).await?;
+        let live: HashMap<i64, u16> = link
+            .manifest
+            .chunks
+            .iter()
+            .map(|chunk| (chunk.index, chunk.generation))
+            .collect();
         let mut sizes: HashMap<i64, u64> = HashMap::new();
         for object in objects {
             let key = object.location.as_ref();
             if let Some(super::ParsedLinkKey {
-                kind: super::ParsedKeyKind::Chunk { index, .. },
+                kind: super::ParsedKeyKind::Chunk { index, generation },
                 ..
             }) = super::parse_link_key(&s3.source_root(&link.manifest.source), key)
             {
-                sizes.insert(index, object.size);
+                // Ignore superseded generations; the manifest names the live
+                // object for each index.
+                if live.get(&index) == Some(&generation) {
+                    sizes.insert(index, object.size);
+                }
             }
         }
         let (missing, bad) = index_problems(&link.manifest, &sizes);
