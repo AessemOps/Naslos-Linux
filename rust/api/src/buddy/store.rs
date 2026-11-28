@@ -806,8 +806,10 @@ impl Store {
         Ok(backups.into_iter().map(|b| b.created_at).max())
     }
 
-    /// Keep the newest `keep` chains, never deleting one the current backup
-    /// descends from. Returns the number removed.
+    /// Keep the newest `keep` lineages, never deleting one the current backup
+    /// descends from. A lineage is a full plus its GUID-contiguous
+    /// incrementals, so pruning whole lineages can never orphan a kept
+    /// incremental. Returns the number of chains removed.
     pub fn prune(&self, key_id: &str, source: &str, keep: usize) -> SResult<usize> {
         if keep < 1 {
             return Err(other("keep must be at least 1"));
@@ -819,89 +821,57 @@ impl Store {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
             Err(e) => return Err(e.into()),
         };
-        struct ChainInfo {
-            name: String,
-            when: DateTime<Utc>,
-            from_guid: String,
-            to_guid: String,
-        }
         let mut chains = Vec::new();
         for entry in entries.flatten() {
             if !entry.path().is_dir() {
                 continue;
             }
             let name = entry.file_name().to_string_lossy().into_owned();
-            let mut info = ChainInfo {
+            let mut info = StoredChain {
                 name,
-                when: DateTime::<Utc>::MIN_UTC,
+                created_at: DateTime::<Utc>::MIN_UTC,
                 from_guid: String::new(),
                 to_guid: String::new(),
+                incremental: true,
             };
             if let Ok(raw) = std::fs::read(entry.path().join("manifest.json")) {
                 if let Ok(m) = serde_json::from_slice::<Manifest>(&raw) {
-                    info.when = m.created_at;
+                    info.created_at = m.created_at;
                     info.from_guid = m.from_guid;
                     info.to_guid = m.to_guid;
+                    info.incremental = !m.from_snapshot.is_empty();
                 }
             }
             chains.push(info);
         }
-        chains.sort_by_key(|c| std::cmp::Reverse(c.when));
 
         let current_chain = std::fs::read(dir.join("current.json"))
             .ok()
             .and_then(|raw| serde_json::from_slice::<Manifest>(&raw).ok())
             .map(|m| m.chain)
             .unwrap_or_default();
-
-        let mut required = std::collections::HashSet::new();
-        let newest = if !current_chain.is_empty() {
-            current_chain.clone()
-        } else {
-            chains.first().map(|c| c.name.clone()).unwrap_or_default()
-        };
-        if !newest.is_empty() {
-            required.insert(newest.clone());
-            let mut from_guid = chains
+        let current_chain = if current_chain.is_empty() {
+            chains
                 .iter()
-                .find(|c| c.name == newest)
-                .map(|c| c.from_guid.clone())
-                .unwrap_or_default();
-            while !from_guid.is_empty() {
-                let mut next = String::new();
-                for candidate in &chains {
-                    if candidate.to_guid == from_guid && !required.contains(&candidate.name) {
-                        next = candidate.name.clone();
-                        from_guid = candidate.from_guid.clone();
-                        break;
-                    }
-                }
-                if next.is_empty() {
-                    break;
-                }
-                required.insert(next);
-            }
-        }
+                .max_by_key(|c| c.created_at)
+                .map(|c| c.name.clone())
+                .unwrap_or_default()
+        } else {
+            current_chain
+        };
 
-        let mut remaining = chains.len();
+        let doomed = lineage_prune_plan(&chains, &current_chain, keep);
         let mut removed = 0;
-        for chain in chains.iter().rev() {
-            if remaining <= keep {
-                break;
-            }
-            if required.contains(&chain.name) {
-                continue;
-            }
-            if std::fs::remove_dir_all(chains_dir.join(&chain.name)).is_ok() {
+        for name in &doomed {
+            if delete_chain_files(&chains_dir.join(name)) {
                 removed += 1;
-                remaining -= 1;
             }
         }
         if removed > 0 {
             self.invalidate_usage(key_id);
             let mut links = HashMap::new();
             for chain in &chains {
-                if chain.to_guid.is_empty() {
+                if chain.to_guid.is_empty() || doomed.contains(&chain.name) {
                     continue;
                 }
                 if chains_dir.join(&chain.name).exists() {
@@ -912,6 +882,118 @@ impl Store {
         }
         Ok(removed)
     }
+}
+
+/// One stored chain, as retention planning sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredChain {
+    pub name: String,
+    pub created_at: DateTime<Utc>,
+    pub from_guid: String,
+    pub to_guid: String,
+    /// A full send (no base) rather than a piece of an incremental chain.
+    pub incremental: bool,
+}
+
+/// Delete a chain's manifest first, then its chunks, so a crash at any point
+/// leaves either a complete chain or chunks no manifest points at.
+fn delete_chain_files(dir: &Path) -> bool {
+    let manifest = dir.join("manifest.json");
+    if manifest.exists() && std::fs::remove_file(&manifest).is_err() {
+        return false;
+    }
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return false,
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with("chunk-") {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+    std::fs::remove_dir(dir).is_ok()
+}
+
+/// The chains to delete for `keep` retained lineages, newest link first.
+///
+/// Chains are grouped into lineages: a full send starts one, and an
+/// incremental joins the lineage whose newest `to_guid` is its `from_guid`.
+/// An incremental whose base is gone forms its own (broken) lineage so it
+/// never protects anything. Rules, mirroring the cloud planner:
+/// - `keep` counts lineages, and the lineage holding `current_chain` is
+///   always retained;
+/// - a lineage is deletable only when a newer lineage has a published full,
+///   so a kept incremental can never lose its base;
+/// - a doomed lineage is deleted whole, newest link first.
+pub fn lineage_prune_plan(chains: &[StoredChain], current_chain: &str, keep: usize) -> Vec<String> {
+    let keep = keep.max(1);
+    let mut order: Vec<&StoredChain> = chains.iter().collect();
+    order.sort_by_key(|c| c.created_at);
+    let mut lineages: Vec<Vec<&StoredChain>> = Vec::new();
+    let mut tip_lineage: HashMap<&str, usize> = HashMap::new();
+    for chain in &order {
+        let joined = if chain.incremental {
+            tip_lineage.get(chain.from_guid.as_str()).copied()
+        } else {
+            None
+        };
+        let index = match joined {
+            Some(index) => index,
+            None => {
+                lineages.push(Vec::new());
+                lineages.len() - 1
+            }
+        };
+        if !chain.to_guid.is_empty() {
+            tip_lineage.insert(chain.to_guid.as_str(), index);
+        }
+        lineages[index].push(chain);
+    }
+    struct Lineage<'a> {
+        chains: Vec<&'a StoredChain>,
+        newest: DateTime<Utc>,
+        has_full: bool,
+        current: bool,
+    }
+    let mut metas: Vec<Lineage> = lineages
+        .into_iter()
+        .map(|chains| Lineage {
+            newest: chains
+                .iter()
+                .map(|c| c.created_at)
+                .max()
+                .unwrap_or(DateTime::<Utc>::MIN_UTC),
+            has_full: chains.first().is_some_and(|c| !c.incremental),
+            current: chains.iter().any(|c| c.name == current_chain),
+            chains,
+        })
+        .collect();
+    metas.sort_by_key(|l| std::cmp::Reverse(l.newest));
+    let mut retained: HashSet<usize> = metas
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| l.current)
+        .map(|(i, _)| i)
+        .collect();
+    for index in 0..metas.len().min(keep) {
+        retained.insert(index);
+    }
+    let mut doomed: Vec<usize> = Vec::new();
+    let mut newer_has_full = false;
+    for (index, lineage) in metas.iter().enumerate() {
+        if !retained.contains(&index) && newer_has_full && lineage.has_full {
+            doomed.push(index);
+        }
+        newer_has_full |= lineage.has_full;
+    }
+    let mut out = Vec::new();
+    for index in doomed {
+        let mut chains = metas[index].chains.clone();
+        chains.sort_by_key(|c| std::cmp::Reverse(c.created_at));
+        out.extend(chains.iter().map(|c| c.name.clone()));
+    }
+    out
 }
 
 /// What a resuming sender needs to know about a stored chunk.
@@ -1736,6 +1818,138 @@ mod tests {
             .collect();
         assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
         assert_eq!(store.usage(&kid).unwrap(), billed);
+    }
+
+    fn stored_chain(
+        name: &str,
+        created: i64,
+        from_guid: &str,
+        to_guid: &str,
+        incremental: bool,
+    ) -> StoredChain {
+        StoredChain {
+            name: name.into(),
+            created_at: DateTime::from_timestamp(created, 0).unwrap(),
+            from_guid: from_guid.into(),
+            to_guid: to_guid.into(),
+            incremental,
+        }
+    }
+
+    #[test]
+    fn a_forced_full_never_deletes_the_oldest_full_first() {
+        // Lineage 1: full a -> inc a2. Lineage 2: full b -> inc b2.
+        // keep=1 retains lineage 2; lineage 1 may only die because lineage 2
+        // has a published full, and it dies whole rather than incrementals
+        // first.
+        let chains = vec![
+            stored_chain("a", 10, "", "a", false),
+            stored_chain("a2", 20, "a", "a2", true),
+            stored_chain("b", 30, "", "b", false),
+            stored_chain("b2", 40, "b", "b2", true),
+        ];
+        let doomed = lineage_prune_plan(&chains, "b2", 1);
+        assert_eq!(doomed, vec!["a2".to_string(), "a".to_string()]);
+        // The kept lineage's full and incremental both survive.
+        assert!(!doomed.contains(&"b".to_string()));
+        assert!(!doomed.contains(&"b2".to_string()));
+    }
+
+    #[test]
+    fn an_endless_incremental_lineage_is_kept_whole() {
+        // One full and 50 incrementals, all one lineage: keep=1 cannot drop
+        // any of them, because no newer lineage has a published full.
+        let mut chains = vec![stored_chain("full", 0, "", "g0", false)];
+        for i in 1..=50 {
+            chains.push(stored_chain(
+                &format!("inc{i}"),
+                i,
+                &format!("g{}", i - 1),
+                &format!("g{i}"),
+                true,
+            ));
+        }
+        assert!(lineage_prune_plan(&chains, "inc50", 1).is_empty());
+        // Even with an explicit keep above one, nothing is deletable.
+        assert!(lineage_prune_plan(&chains, "inc50", 5).is_empty());
+    }
+
+    #[test]
+    fn an_incremental_whose_base_is_gone_never_protects_a_lineage() {
+        let chains = vec![
+            stored_chain("b", 30, "", "b", false),
+            stored_chain("b2", 40, "b", "b2", true),
+            // Orphan: its from_guid matches nothing, so it starts a lineage.
+            stored_chain("orphan", 50, "vanished", "o", true),
+        ];
+        let doomed = lineage_prune_plan(&chains, "b2", 1);
+        // The orphan is its own newer lineage without a full, so it is not
+        // deletable; lineage b is retained as the current one.
+        assert!(doomed.is_empty(), "{doomed:?}");
+    }
+
+    #[test]
+    fn a_duplicate_full_starts_a_new_lineage() {
+        // Two forced fulls of the same source: the older one is deletable
+        // only because the newer has a published full.
+        let chains = vec![
+            stored_chain("full1", 10, "", "g1", false),
+            stored_chain("full2", 20, "", "g2", false),
+        ];
+        assert_eq!(
+            lineage_prune_plan(&chains, "full2", 1),
+            vec!["full1".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_prune_deletes_the_manifest_before_the_chunks() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::new(&dir.path().display().to_string());
+        let kid = key_id();
+        let sealed = sealed_for(8, 2);
+        // Lineage 1 is a full plus one incremental; lineage 2 is a newer full.
+        let chains = [
+            ("aaaa", "", "g1", 10u64, 1u64),
+            ("aaab", "g1", "g1b", 20, 2),
+            ("bbbb", "", "g2", 30, 3),
+        ];
+        for (chain, from_guid, to_guid, created, sequence) in chains {
+            store.put_chunk(&kid, "src", chain, 0, &sealed).unwrap();
+            let mut manifest = manifest_titled(chain, sequence);
+            manifest.from_snapshot = if from_guid.is_empty() {
+                String::new()
+            } else {
+                "buddy-1".into()
+            };
+            manifest.from_guid = from_guid.into();
+            manifest.to_guid = to_guid.into();
+            manifest.created_at = DateTime::from_timestamp(created as i64, 0).unwrap();
+            manifest.chunks = vec![super::super::envelope::ManifestChunk {
+                index: 0,
+                plain_bytes: 8,
+                sealed_bytes: sealed.len() as i64,
+                generation: 0,
+                sha256_plain: "a".repeat(64),
+            }];
+            store.put_manifest(&kid, "src", &manifest).unwrap();
+        }
+        assert_eq!(store.prune(&kid, "src", 1).unwrap(), 2);
+        let source_dir = store.source_dir(&kid, "src").unwrap();
+        // The old lineage is gone whole; the current lineage's chain and its
+        // chunks remain.
+        assert!(!source_dir.join("chains").join("aaaa").exists());
+        assert!(!source_dir.join("chains").join("aaab").exists());
+        assert!(source_dir
+            .join("chains")
+            .join("bbbb")
+            .join("manifest.json")
+            .exists());
+        assert!(source_dir
+            .join("chains")
+            .join("bbbb")
+            .join("chunk-000000.enc")
+            .exists());
     }
 
     #[test]

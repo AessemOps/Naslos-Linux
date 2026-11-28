@@ -48,6 +48,13 @@ pub struct ScheduleEntry {
     pub run_at: String,
     #[serde(default, rename = "pruneKeep", skip_serializing_if = "is_zero")]
     pub prune_keep: usize,
+    /// Force a full send every Nth scheduled run, so an endless incremental
+    /// lineage is periodically rebased onto a fresh full.
+    #[serde(default = "default_full_every", rename = "fullEvery")]
+    pub full_every: usize,
+    /// Scheduled fires since the last forced full.
+    #[serde(default, rename = "sendsSinceFull")]
+    pub sends_since_full: usize,
     #[serde(default)]
     pub enabled: bool,
     #[serde(default, rename = "lastRun", skip_serializing_if = "Option::is_none")]
@@ -70,6 +77,10 @@ pub struct ScheduleEntry {
 
 fn is_zero(n: &usize) -> bool {
     *n == 0
+}
+
+fn default_full_every() -> usize {
+    30
 }
 
 impl ScheduleEntry {
@@ -187,6 +198,18 @@ impl ScheduleStore {
         });
     }
 
+    /// Count a fire of the schedule; a reset to zero follows a forced full.
+    pub fn record_sends(&self, id: &str, forced_full: bool) {
+        let _ = self.inner.update(id, |e| {
+            e.sends_since_full = if forced_full {
+                0
+            } else {
+                e.sends_since_full.saturating_add(1)
+            };
+            Ok(())
+        });
+    }
+
     /// Advance an entry's next run (called once when a fan-out starts).
     pub fn advance_next_run(&self, id: &str, now: DateTime<Utc>) {
         let _ = self.inner.update(id, |e| {
@@ -250,6 +273,8 @@ struct ScheduleRequest {
     run_at: String,
     #[serde(default, rename = "pruneKeep")]
     prune_keep: usize,
+    #[serde(default, rename = "fullEvery")]
+    full_every: Option<usize>,
     #[serde(default)]
     enabled: Option<bool>,
 }
@@ -276,6 +301,7 @@ pub async fn schedules_post(State(state): State<Arc<AppState>>, body: Body) -> R
         cadence: req.cadence,
         run_at: req.run_at.trim().to_string(),
         prune_keep: req.prune_keep,
+        full_every: req.full_every.unwrap_or_else(default_full_every),
         enabled: req.enabled.unwrap_or(true),
         ..Default::default()
     };
@@ -288,6 +314,7 @@ pub async fn schedules_post(State(state): State<Arc<AppState>>, body: Body) -> R
         entry.last_result = existing.last_result;
         entry.last_error = existing.last_error;
         entry.receiver_results = existing.receiver_results;
+        entry.sends_since_full = existing.sends_since_full;
     }
     if let Err(e) = validate_schedule(&state, &mut entry).await {
         return json(StatusCode::BAD_REQUEST, serde_json::json!({ "error": e }));
@@ -356,6 +383,9 @@ async fn start_schedule_job(state: &Arc<AppState>, entry: ScheduleEntry) {
     if receivers.is_empty() {
         return;
     }
+    // Force a full send on every Nth fire so an endless incremental lineage
+    // is rebased; the counter is per schedule, not per receiver.
+    let force = entry.full_every > 0 && entry.sends_since_full + 1 >= entry.full_every;
     let mut started = 0;
     for receiver in receivers {
         if let Some(conflict) = state.buddy_jobs.conflicting(&receiver, &entry.source) {
@@ -374,7 +404,7 @@ async fn start_schedule_job(state: &Arc<AppState>, entry: ScheduleEntry) {
             entry.source.clone(),
             receiver.clone(),
             true,
-            false,
+            force,
             entry.prune_keep,
             entry.id.clone(),
         )
@@ -385,6 +415,7 @@ async fn start_schedule_job(state: &Arc<AppState>, entry: ScheduleEntry) {
         started += 1;
     }
     if started > 0 {
+        state.buddy_schedules.record_sends(&entry.id, force);
         state
             .buddy_schedules
             .advance_next_run(&entry.id, Utc::now());
@@ -420,6 +451,49 @@ pub async fn run_scheduler(state: Arc<AppState>) {
 mod tests {
     use super::*;
     use chrono::{Datelike, TimeZone, Weekday};
+
+    #[test]
+    fn an_old_schedule_file_loads_with_full_every_defaulting_to_30() {
+        let json = r#"{"id":"s1","dataset":"tank/data","source":"naslos-data/data","receiver":"https://b","enabled":true}"#;
+        let entry: ScheduleEntry = serde_json::from_str(json).unwrap();
+        assert_eq!(entry.full_every, 30);
+        assert_eq!(entry.sends_since_full, 0);
+    }
+
+    #[test]
+    fn full_every_is_configurable_and_round_trips() {
+        let json = r#"{"id":"s1","fullEvery":7,"sendsSinceFull":3}"#;
+        let entry: ScheduleEntry = serde_json::from_str(json).unwrap();
+        assert_eq!(entry.full_every, 7);
+        assert_eq!(entry.sends_since_full, 3);
+        let back: ScheduleEntry =
+            serde_json::from_slice(&serde_json::to_vec(&entry).unwrap()).unwrap();
+        assert_eq!(back.full_every, 7);
+        assert_eq!(back.sends_since_full, 3);
+    }
+
+    #[test]
+    fn a_full_is_forced_on_the_nth_send_and_the_counter_resets() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("schedules.json");
+        let store = ScheduleStore::new(path.to_str().unwrap());
+        store.load().unwrap();
+        store
+            .put(ScheduleEntry {
+                id: "s1".into(),
+                full_every: 3,
+                ..Default::default()
+            })
+            .unwrap();
+        let force_now = |count: usize| count + 1 >= 3;
+        assert!(!force_now(store.get("s1").unwrap().sends_since_full));
+        store.record_sends("s1", false);
+        assert!(!force_now(store.get("s1").unwrap().sends_since_full));
+        store.record_sends("s1", false);
+        assert!(force_now(store.get("s1").unwrap().sends_since_full));
+        store.record_sends("s1", true);
+        assert_eq!(store.get("s1").unwrap().sends_since_full, 0);
+    }
 
     #[test]
     fn run_at_parsing() {
@@ -514,6 +588,8 @@ mod tests {
                 cadence: Cadence::Daily,
                 run_at: "02:30".into(),
                 prune_keep: 2,
+                full_every: default_full_every(),
+                sends_since_full: 0,
                 enabled: true,
                 last_run: Some(stamp),
                 last_result: "ok".into(),
