@@ -34,13 +34,13 @@ fn active_restores() -> &'static Mutex<HashSet<String>> {
 }
 
 /// Releases the per-dataset restore slot on every exit path.
-struct RestoreFlight {
+pub(crate) struct RestoreFlight {
     dataset: String,
 }
 
 impl RestoreFlight {
     /// `None` when a restore of this dataset is already in progress.
-    fn acquire(dataset: &str) -> Option<Self> {
+    pub(crate) fn acquire(dataset: &str) -> Option<Self> {
         let mut active = match active_restores().lock() {
             Ok(guard) => guard,
             // A panic in another test/request cannot make the slot silently
@@ -98,8 +98,8 @@ fn sequence_dir() -> String {
 }
 
 /// A sink that hashes everything written to it (the verify path).
-struct ShaWriter {
-    hasher: sha2::Sha256,
+pub(crate) struct ShaWriter {
+    pub(crate) hasher: sha2::Sha256,
 }
 
 impl AsyncWrite for ShaWriter {
@@ -484,7 +484,10 @@ async fn live_snapshot_exists(
 }
 
 /// Whether the dataset still exists according to the live dataset listing.
-async fn live_dataset_exists(agent: &crate::agent::Client, dataset: &str) -> Result<bool, String> {
+pub(crate) async fn live_dataset_exists(
+    agent: &crate::agent::Client,
+    dataset: &str,
+) -> Result<bool, String> {
     let datasets = agent
         .list_datasets()
         .await
@@ -811,29 +814,29 @@ async fn verify_chain(
 /// Where an in-flight restore records its snapshot and applied chain index.
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct RestoreProgress {
-    dataset: String,
-    source: String,
-    receiver: String,
-    snapshot: String,
-    applied_chains: Vec<String>,
-    chunks: usize,
-    plain_bytes: i64,
+pub(crate) struct RestoreProgress {
+    pub(crate) dataset: String,
+    pub(crate) source: String,
+    pub(crate) receiver: String,
+    pub(crate) snapshot: String,
+    pub(crate) applied_chains: Vec<String>,
+    pub(crate) chunks: usize,
+    pub(crate) plain_bytes: i64,
     /// The marker was kept after a failed receive with no usable rollback
     /// point, so the destination may be half-applied. Recovery must refuse
     /// until an operator verifies/destroys the dataset or removes the marker.
     /// Missing from older markers, hence the serde default.
     #[serde(default)]
-    rollback_lost: bool,
+    pub(crate) rollback_lost: bool,
 }
 
 impl RestoreProgress {
-    fn load(path: &str) -> Option<Self> {
+    pub(crate) fn load(path: &str) -> Option<Self> {
         let data = std::fs::read(path).ok()?;
         serde_json::from_slice(&data).ok()
     }
 
-    fn save(&self, path: &str) -> Result<(), String> {
+    pub(crate) fn save(&self, path: &str) -> Result<(), String> {
         let data = serde_json::to_vec_pretty(self).map_err(|e| e.to_string())?;
         crate::chartsrepo::write_atomic(path, &data, 0o600, 0o700)
     }

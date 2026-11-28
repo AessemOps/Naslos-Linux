@@ -7,20 +7,21 @@
 
 use base64::Engine;
 use chrono::{DateTime, Utc};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::io::AsyncRead;
 
 use super::auth::{body_digest, sign_request_for};
-use super::envelope::{
-    digest_of, new_stream_prefix, open_chunk, seal_chunk, unwrap_dek, wrap_dek, Manifest,
-    ManifestChunk, CHUNK_PLAIN_SIZE, ENVELOPE_VERSION,
-};
+use super::envelope::{new_stream_prefix, Manifest};
 use super::keys::Identity;
 use super::peers::validate_source;
+use super::transfer::{
+    build_restore_sequence, push_with, restore_chain, ChunkSource, ChunkStore, PushPolicy,
+    RestorePolicy, SequenceAnchor,
+};
 
-const MAX_MANIFEST_BYTES: usize = 16 << 20;
-const SEALED_OVERHEAD: usize = 4 + 4 + 12 + 16;
+/// The Buddy receiver's manifest (and response body) cap.
+pub const MAX_MANIFEST_BYTES: usize = 16 << 20;
 pub const CHAIN_STATE_VERSION: i32 = 1;
 
 /// The receiver's identity and stored state, as returned by `/status`.
@@ -134,15 +135,6 @@ pub struct PushOptions<'a> {
     pub save_state: &'a (dyn Fn(&ChainState) -> Result<(), String> + Send + Sync),
 }
 
-/// The generation a push attempt uses. It is strictly greater than both the
-/// persisted generation and every stored chunk's generation, so a retry can
-/// never re-use a (prefix, generation, index) nonce for different plaintext.
-fn next_attempt_generation(persisted: u16, stored_max: u16) -> Result<u16, String> {
-    persisted.max(stored_max).checked_add(1).ok_or_else(|| {
-        "the chain's nonce generation counter is exhausted; start a new chain".to_string()
-    })
-}
-
 /// The outcome of a restore.
 #[derive(Debug, Clone, Default)]
 pub struct RestoreResult {
@@ -237,7 +229,7 @@ impl ChainState {
         std::fs::rename(&tmp, path).map_err(|e| e.to_string())
     }
 
-    fn dek(&self) -> Result<Vec<u8>, String> {
+    pub(crate) fn dek(&self) -> Result<Vec<u8>, String> {
         let dek = base64::engine::general_purpose::STANDARD
             .decode(&self.dek)
             .map_err(|e| format!("decoding chain key: {e}"))?;
@@ -247,7 +239,7 @@ impl ChainState {
         Ok(dek)
     }
 
-    fn prefix(&self) -> Result<Vec<u8>, String> {
+    pub(crate) fn prefix(&self) -> Result<Vec<u8>, String> {
         let prefix = base64::engine::general_purpose::STANDARD
             .decode(&self.prefix)
             .map_err(|e| format!("decoding stream prefix: {e}"))?;
@@ -783,41 +775,18 @@ impl Client {
         if chains.is_empty() {
             return Err(format!("no backup of {source} is stored here"));
         }
-        let target = if chain.is_empty() {
-            chains[0].clone()
-        } else {
-            chains
-                .iter()
-                .find(|c| c.chain == chain)
-                .cloned()
-                .ok_or_else(|| format!("chain {chain} is not stored for {source}"))?
-        };
-        let by_guid: HashMap<&str, &ChainSummary> = chains
-            .iter()
-            .filter(|c| !c.to_guid.is_empty())
-            .map(|c| (c.to_guid.as_str(), c))
-            .collect();
-        let mut sequence = vec![target.clone()];
-        let mut seen = HashSet::new();
-        seen.insert(target.chain.clone());
-        let mut current = target;
-        while !current.from_guid.is_empty() {
-            let Some(base) = by_guid.get(current.from_guid.as_str()) else {
-                return Err(format!(
-                    "chain {} needs the chain that produced GUID {}, which is not stored here: the backup cannot be rebuilt from this receiver",
-                    current.chain, current.from_guid
-                ));
-            };
-            if !seen.insert(base.chain.clone()) {
-                return Err(format!(
-                    "the chain history of {source} contains a loop at {}",
-                    base.chain
-                ));
-            }
-            sequence.push((*base).clone());
-            current = (*base).clone();
+        if !chain.is_empty() && !chains.iter().any(|c| c.chain == chain) {
+            return Err(format!("chain {chain} is not stored for {source}"));
         }
-        sequence.reverse();
+        let target = (!chain.is_empty()).then_some(chain);
+        let sequence = build_restore_sequence(&chains, target).map_err(|e| {
+            // Keep the historical messages (they name the source) on the
+            // receiver-listing fallback path.
+            match e.strip_prefix("the chain history contains a loop at ") {
+                Some(chain) => format!("the chain history of {source} contains a loop at {chain}"),
+                None => e,
+            }
+        })?;
         let last = self.last_published_sequence(source)?;
         validate_restore_sequence(source, &sequence, last)?;
         Ok(sequence)
@@ -841,457 +810,83 @@ impl Client {
     /// Stream the plaintext, seal chunk by chunk, upload what is missing and
     /// publish a signed manifest.
     pub async fn push(&self, opts: PushOptions<'_>) -> (PushResult, Option<String>) {
-        let mut result = PushResult {
-            source: opts.source.to_string(),
-            ..Default::default()
-        };
-        if let Err(e) = validate_source(opts.source) {
-            return (result, Some(e));
-        }
-        let kind = if opts.kind.is_empty() {
-            "tar"
-        } else {
-            opts.kind
-        };
-        let mut state = match opts.state.clone() {
-            Some(s) => s,
-            None => match ChainState::new(opts.source, kind) {
-                Ok(s) => s,
-                Err(e) => return (result, Some(e)),
-            },
-        };
-        if state.source != opts.source {
-            return (
-                result,
-                Some(format!(
-                    "resume state belongs to {}, not {}",
-                    state.source, opts.source
-                )),
-            );
-        }
-        if let Err(e) = valid_chain_id(&state.chain) {
-            return (result, Some(e));
-        }
-        result.chain = state.chain.clone();
-        let dek = match state.dek() {
-            Ok(d) => d,
-            Err(e) => return (result, Some(e)),
-        };
-        let prefix = match state.prefix() {
-            Ok(p) => p,
-            Err(e) => return (result, Some(e)),
-        };
-        let (stored, published) = match self.stored_chunks(opts.source, &state.chain).await {
-            Ok(v) => v,
-            Err(e) => return (result, Some(e)),
-        };
-        let tail_index = stored.keys().copied().max().unwrap_or(-1);
-        let stored_max_generation = stored.values().map(|c| c.generation).max().unwrap_or(0);
-        let attempt_generation =
-            match next_attempt_generation(state.generation, stored_max_generation) {
-                Ok(g) => g,
-                Err(e) => return (result, Some(e)),
-            };
-        // Persist before transmitting: if this attempt dies mid-stream the next
-        // one must start from a fresh generation, not the old one.
-        state.generation = attempt_generation;
-        if let Err(e) = (opts.save_state)(&state) {
-            return (result, Some(format!("persisting the resume state: {e}")));
-        }
-        let last_sequence = match self.last_published_sequence(opts.source) {
-            Ok(s) => s,
-            Err(e) => return (result, Some(e)),
-        };
-        let sequence = last_sequence + 1;
-
-        let mut manifest = Manifest {
-            version: ENVELOPE_VERSION,
-            source: opts.source.to_string(),
-            chain: state.chain.clone(),
-            kind: state.kind.clone(),
-            from_snapshot: opts.from_snapshot.to_string(),
-            to_snapshot: opts.to_snapshot.to_string(),
-            from_guid: opts.from_guid.to_string(),
-            to_guid: opts.to_guid.to_string(),
-            created_at: Utc::now(),
-            key_id: String::new(),
-            sequence,
-            generation: state.generation,
-            stream_prefix: state.prefix.clone(),
-            chunk_plain_size: CHUNK_PLAIN_SIZE as i64,
-            chunks: Vec::new(),
-            dek_wrapped: String::new(),
-            signature: String::new(),
-        };
-        result.state = Some(state.clone());
-
-        let generation = attempt_generation;
-        let mut buf = vec![0u8; CHUNK_PLAIN_SIZE];
-        let mut index: i64 = 0;
-        loop {
-            let (n, short_tail) = match read_full(opts.reader, &mut buf).await {
-                Ok(v) => v,
-                Err(e) => return (result, Some(format!("reading input: {e}"))),
-            };
-            if n == 0 && !short_tail {
-                break;
-            }
-            if short_tail {
-                result.short_tail = true;
-            }
-            let plain = &buf[..n];
-            let mut chunk_generation = generation;
-            let stored_info = stored.get(&index).cloned();
-            if let Some(info) = &stored_info {
-                chunk_generation = info.generation;
-            }
-            let (mut sealed, mut sha) = match seal_chunk(
-                &dek,
-                &prefix,
-                chunk_generation,
-                opts.source,
-                &state.chain,
-                index,
-                plain,
-            ) {
-                Ok(v) => v,
-                Err(e) => return (result, Some(e)),
-            };
-            let mut entry = ManifestChunk {
-                index,
-                plain_bytes: n as i64,
-                sealed_bytes: sealed.len() as i64,
-                generation: chunk_generation,
-                sha256_plain: sha.clone(),
-            };
-
-            let mut upload = true;
-            if let Some(info) = &stored_info {
-                if info.digest != digest_of(&sealed) {
-                    if published || index != tail_index {
-                        return (
-                            result,
-                            Some(format!(
-                                "the receiver already holds different bytes for chunk {index} of chain {}: the source changed since the push was interrupted, start a new chain",
-                                state.chain
-                            )),
-                        );
-                    }
-                    chunk_generation = generation;
-                    match seal_chunk(
-                        &dek,
-                        &prefix,
-                        chunk_generation,
-                        opts.source,
-                        &state.chain,
-                        index,
-                        plain,
-                    ) {
-                        Ok((s, h)) => {
-                            sealed = s;
-                            sha = h;
-                            entry = ManifestChunk {
-                                index,
-                                plain_bytes: n as i64,
-                                sealed_bytes: sealed.len() as i64,
-                                generation: chunk_generation,
-                                sha256_plain: sha.clone(),
-                            };
-                        }
-                        Err(e) => return (result, Some(e)),
-                    }
-                } else {
-                    entry.sealed_bytes = n as i64 + SEALED_OVERHEAD as i64;
-                    upload = false;
-                }
-            }
-            if upload {
-                let path = format!(
-                    "/chunks/{}?chain={}&index={index}",
-                    opts.source, state.chain
-                );
-                if let Err(e) = self.do_request(reqwest::Method::PUT, &path, &sealed).await {
-                    return (result, Some(e));
-                }
-                result.uploaded += 1;
-            } else {
-                result.skipped += 1;
-            }
-
-            result.chunks += 1;
-            result.plain_bytes += n as i64;
-            result.sealed_bytes += entry.sealed_bytes;
-            manifest.chunks.push(entry);
-            if let Some(progress) = opts.progress {
-                progress(PushProgress {
-                    chunk: index,
-                    plain_bytes: result.plain_bytes,
-                    sealed_bytes: result.sealed_bytes,
-                    uploaded: result.uploaded,
-                    skipped: result.skipped,
-                });
-            }
-            state.resume_index = index;
-            if let Err(e) = (opts.save_state)(&state) {
-                return (result, Some(format!("persisting the resume state: {e}")));
-            }
-            index += 1;
-            if short_tail {
-                break;
-            }
-        }
-
-        if manifest.chunks.is_empty() {
-            return (
-                result,
-                Some("nothing to back up: the input stream produced no data".to_string()),
-            );
-        }
-        manifest.generation = generation;
-
-        if let Some(before) = opts.before_publish {
-            if let Err(e) = before(&result) {
-                return (result, Some(e));
-            }
-        }
-
-        let kek = match self.identity.kek_bytes() {
-            Ok(k) => k,
-            Err(e) => return (result, Some(e)),
-        };
-        let wrapped = match wrap_dek(&kek, &dek, opts.source, &state.chain) {
-            Ok(w) => w,
-            Err(e) => return (result, Some(e)),
-        };
-        manifest.dek_wrapped = wrapped;
-        if let Err(e) = manifest.sign(&self.identity) {
-            return (result, Some(e));
-        }
-        let payload = match serde_json::to_vec(&manifest) {
-            Ok(p) => p,
-            Err(e) => return (result, Some(e.to_string())),
-        };
-        if payload.len() > MAX_MANIFEST_BYTES {
-            return (
-                result,
-                Some(format!(
-                    "chain {} has {} chunks and its manifest is {} bytes, over the {}-byte limit",
-                    state.chain,
-                    manifest.chunks.len(),
-                    payload.len(),
-                    MAX_MANIFEST_BYTES
-                )),
-            );
-        }
-        if let Err(e) = self
-            .do_request(
-                reqwest::Method::PUT,
-                &format!("/manifest/{}", opts.source),
-                &payload,
-            )
-            .await
-        {
-            return (result, Some(e));
-        }
-        if let Err(e) = self.record_published_sequence(opts.source, sequence) {
-            return (result, Some(e));
-        }
-        if opts.prune_keep > 0 {
-            match self.prune(opts.source, opts.prune_keep).await {
-                Ok(removed) => result.pruned_chains = removed,
-                Err(e) => return (result, Some(e)),
-            }
-        }
-        result.state = Some(state);
-        result.manifest = Some(manifest);
-        (result, None)
+        push_with(self, &self.identity, opts, &PushPolicy::buddy()).await
     }
 
     /// Pull the stored chunks back, decrypt them and write the original stream.
     pub async fn restore(&self, opts: RestoreOptions<'_>) -> (RestoreResult, Option<String>) {
-        let mut result = RestoreResult {
-            source: opts.source.to_string(),
-            ..Default::default()
-        };
-        if let Err(e) = validate_source(opts.source) {
-            return (result, Some(e));
-        }
-        let manifest = match self.manifest(opts.source, opts.chain).await {
-            Ok(m) => m,
-            Err(e) => return (result, Some(e)),
-        };
-        if manifest.version != ENVELOPE_VERSION {
-            return (result, Some(format!("refusing to restore: the receiver returned a v{} manifest, this sender speaks v{ENVELOPE_VERSION}", manifest.version)));
-        }
-        if manifest.source != opts.source {
-            return (
-                result,
-                Some(format!(
-                    "refusing to restore: the receiver returned a manifest for {:?}, not {:?}",
-                    manifest.source, opts.source
-                )),
-            );
-        }
-        if !opts.chain.is_empty() && manifest.chain != opts.chain {
-            return (
-                result,
-                Some(format!(
-                    "refusing to restore: the receiver returned chain {:?}, not the requested {:?}",
-                    manifest.chain, opts.chain
-                )),
-            );
-        }
-        if let Err(e) = manifest.verify_signature(&self.identity.public_key) {
-            if !opts.skip_signature_check {
-                return (result, Some(format!("refusing to restore: {e}")));
-            }
-        }
-        if let Some(expected) = opts.expected_sequence {
-            if manifest.sequence != expected {
-                return (
-                    result,
-                    Some(format!(
-                        "refusing to restore chain {}: the receiver returned sequence {}, but the verified sequence was {expected}",
-                        manifest.chain, manifest.sequence
-                    )),
-                );
-            }
-        } else if opts.chain.is_empty() {
-            match self.last_published_sequence(opts.source) {
-                Ok(last) if manifest.sequence < last => {
-                    return (result, Some(format!("refusing to restore: the receiver returned a stale manifest (sequence {}, latest published {last})", manifest.sequence)));
-                }
-                Err(e) => return (result, Some(e)),
-                _ => {}
-            }
-        }
-        // The chain listing the caller followed is receiver-supplied and
-        // unsigned. Cross-check every identity-bearing field against the
-        // signed manifest before reading a chunk or writing plaintext, so a
-        // receiver cannot answer the signed request for chain A while the
-        // restore sequence was built from a different chain's summary.
-        let mut mismatch = None;
-        for (field, expected, actual) in [
-            (
-                "fromGUID",
-                opts.expected_from_guid,
-                manifest.from_guid.as_str(),
-            ),
-            ("toGUID", opts.expected_to_guid, manifest.to_guid.as_str()),
-            ("kind", opts.expected_kind, manifest.kind.as_str()),
-            (
-                "fromSnapshot",
-                opts.expected_from_snapshot,
-                manifest.from_snapshot.as_str(),
-            ),
-            (
-                "toSnapshot",
-                opts.expected_to_snapshot,
-                manifest.to_snapshot.as_str(),
-            ),
-        ] {
-            if expected != actual {
-                mismatch = Some(format!(
-                    "refusing to restore chain {}: the signed manifest's {field} is {actual:?}, but the receiver's chain summary said {expected:?}",
-                    manifest.chain
-                ));
-                break;
-            }
-        }
-        if let Some(e) = mismatch {
-            return (result, Some(e));
-        }
-        let prefix = match manifest.stream_prefix_bytes() {
-            Ok(p) => p,
-            Err(e) => return (result, Some(format!("refusing to restore: {e}"))),
-        };
-        let kek = match self.identity.kek_bytes() {
-            Ok(k) => k,
-            Err(e) => return (result, Some(e)),
-        };
-        let dek = match unwrap_dek(
-            &kek,
-            &manifest.dek_wrapped,
-            &manifest.source,
-            &manifest.chain,
-        ) {
-            Ok(d) => d,
-            Err(e) => return (result, Some(e)),
-        };
-
-        result.chain = manifest.chain.clone();
-        result.manifest = Some(manifest.clone());
-        let mut chunks = manifest.chunks.clone();
-        chunks.sort_by_key(|c| c.index);
-        for (expected, chunk) in chunks.iter().enumerate() {
-            if chunk.index != expected as i64 {
-                return (
-                    result,
-                    Some(format!(
-                        "chain {} is not contiguous: expected chunk {expected}, found {}",
-                        manifest.chain, chunk.index
-                    )),
-                );
-            }
-            let path = format!(
-                "/chunks/{}?chain={}&index={}",
-                manifest.source, manifest.chain, chunk.index
-            );
-            let sealed = match self.do_request(reqwest::Method::GET, &path, b"").await {
-                Ok((data, _)) => data,
-                Err(e) => return (result, Some(e)),
-            };
-            let plain = match open_chunk(
-                &dek,
-                &prefix,
-                chunk.generation,
-                &manifest.source,
-                &manifest.chain,
-                chunk.index,
-                &sealed,
-            ) {
-                Ok(p) => p,
-                Err(e) => return (result, Some(e)),
-            };
-            if digest_of(&plain) != chunk.sha256_plain {
-                return (
-                    result,
-                    Some(format!(
-                        "chunk {} does not match the signed manifest",
-                        chunk.index
-                    )),
-                );
-            }
-            use tokio::io::AsyncWriteExt;
-            if let Err(e) = opts.out.write_all(&plain).await {
-                return (result, Some(format!("writing output: {e}")));
-            }
-            result.chunks += 1;
-            result.plain_bytes += plain.len() as i64;
-            if let Some(progress) = opts.progress {
-                progress(chunk.index, chunks.len(), result.plain_bytes);
-            }
-        }
-        (result, None)
+        restore_chain(self, &self.identity, opts, &RestorePolicy::buddy()).await
     }
 }
 
-/// Read up to `buf.len()` bytes, returning (n, short_tail). `short_tail` is true
-/// when the stream ended part-way through the buffer (Go's ErrUnexpectedEOF).
-async fn read_full(
-    reader: &mut (dyn AsyncRead + Unpin + Send),
-    buf: &mut [u8],
-) -> Result<(usize, bool), String> {
-    let mut filled = 0usize;
-    while filled < buf.len() {
-        match reader.read(&mut buf[filled..]).await {
-            Ok(0) => break,
-            Ok(n) => filled += n,
-            Err(e) => return Err(e.to_string()),
-        }
+impl SequenceAnchor for Client {
+    fn last_published_sequence(&self, source: &str) -> Result<u64, String> {
+        Client::last_published_sequence(self, source)
     }
-    let short_tail = filled > 0 && filled < buf.len();
-    Ok((filled, short_tail))
+
+    fn record_published_sequence(&self, source: &str, sequence: u64) -> Result<(), String> {
+        Client::record_published_sequence(self, source, sequence)
+    }
+}
+
+/// The Buddy HTTP receiver as a chunk store: `GET /chunks/{source}?chain=`,
+/// `PUT /chunks/{source}?chain=&index=`, `PUT /manifest/{source}`,
+/// `POST /prune/{source}`.
+impl ChunkStore for Client {
+    async fn stored_chunks(
+        &self,
+        source: &str,
+        chain: &str,
+    ) -> Result<(HashMap<i64, StoredChunk>, bool), String> {
+        Client::stored_chunks(self, source, chain).await
+    }
+
+    async fn put_chunk(
+        &self,
+        source: &str,
+        chain: &str,
+        index: i64,
+        sealed: &[u8],
+    ) -> Result<(), String> {
+        let path = format!("/chunks/{source}?chain={chain}&index={index}");
+        self.do_request(reqwest::Method::PUT, &path, sealed)
+            .await
+            .map(|_| ())
+    }
+
+    async fn publish_manifest(
+        &self,
+        source: &str,
+        _manifest: &Manifest,
+        payload: &[u8],
+    ) -> Result<(), String> {
+        self.do_request(
+            reqwest::Method::PUT,
+            &format!("/manifest/{source}"),
+            payload,
+        )
+        .await
+        .map(|_| ())
+    }
+
+    async fn prune(&self, source: &str, keep: usize) -> Result<usize, String> {
+        Client::prune(self, source, keep).await
+    }
+}
+
+/// The Buddy HTTP receiver as a chunk source: `GET /manifest/{source}[?chain=]`
+/// and `GET /chunks/{source}?chain=&index=`.
+impl ChunkSource for Client {
+    async fn fetch_manifest(&self, source: &str, chain: &str) -> Result<Manifest, String> {
+        self.manifest(source, chain).await
+    }
+
+    async fn fetch_chunk(&self, source: &str, chain: &str, index: i64) -> Result<Vec<u8>, String> {
+        let path = format!("/chunks/{source}?chain={chain}&index={index}");
+        self.do_request(reqwest::Method::GET, &path, b"")
+            .await
+            .map(|(data, _)| data)
+    }
 }
 
 fn describe_error(status: u16, data: &[u8]) -> String {
@@ -1588,7 +1183,7 @@ mod tests {
         let dek = super::super::envelope::generate_dek().expect("data key");
         let prefix = super::new_stream_prefix().expect("stream prefix");
         let mut manifest = super::Manifest {
-            version: super::ENVELOPE_VERSION,
+            version: super::super::envelope::ENVELOPE_VERSION,
             source: "naslos-test/data".to_string(),
             chain: "abcd".to_string(),
             kind: "tar".to_string(),
@@ -1601,9 +1196,9 @@ mod tests {
             sequence,
             generation: 1,
             stream_prefix: base64::engine::general_purpose::STANDARD.encode(prefix),
-            chunk_plain_size: super::CHUNK_PLAIN_SIZE as i64,
+            chunk_plain_size: super::super::envelope::CHUNK_PLAIN_SIZE as i64,
             chunks: Vec::new(),
-            dek_wrapped: super::wrap_dek(&kek, &dek, "naslos-test/data", "abcd")
+            dek_wrapped: super::super::envelope::wrap_dek(&kek, &dek, "naslos-test/data", "abcd")
                 .expect("wrap the data key"),
             signature: String::new(),
         };

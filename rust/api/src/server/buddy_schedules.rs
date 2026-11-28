@@ -6,7 +6,7 @@
 //! the API was down fires once at startup (catch-up).
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use axum::body::Body;
 use axum::extract::{Query, State};
@@ -18,7 +18,10 @@ use serde::{Deserialize, Serialize};
 use crate::buddy::keys::load_identity;
 use crate::buddy::peers::validate_source;
 use crate::json;
-use crate::schedule::{next_run as cadence_next_run, parse_run_at, Cadence};
+use crate::schedule::{
+    advance_next_run as advance_fan_out, next_run as cadence_next_run, parse_run_at,
+    record_target_result, Cadence, FanOutEntry, JsonStore, JsonStoreItem,
+};
 use crate::state::AppState;
 
 /// One scheduled backup.
@@ -93,17 +96,47 @@ impl ScheduleEntry {
     }
 }
 
+impl JsonStoreItem for ScheduleEntry {
+    fn id(&self) -> &str {
+        &self.id
+    }
+}
+
+impl FanOutEntry for ScheduleEntry {
+    fn targets(&self) -> Vec<String> {
+        self.receiver_list()
+    }
+
+    fn target_results(&mut self) -> &mut HashMap<String, String> {
+        &mut self.receiver_results
+    }
+
+    fn last_run(&mut self) -> &mut Option<DateTime<Utc>> {
+        &mut self.last_run
+    }
+
+    fn last_result(&mut self) -> &mut String {
+        &mut self.last_result
+    }
+
+    fn last_error(&mut self) -> &mut String {
+        &mut self.last_error
+    }
+
+    fn next_run(&mut self) -> &mut Option<DateTime<Utc>> {
+        &mut self.next_run
+    }
+}
+
 /// Persists schedule entries as JSON.
 pub struct ScheduleStore {
-    path: String,
-    entries: Mutex<HashMap<String, ScheduleEntry>>,
+    inner: JsonStore<ScheduleEntry>,
 }
 
 impl ScheduleStore {
     pub fn new(path: &str) -> Self {
         Self {
-            path: path.to_string(),
-            entries: Mutex::new(HashMap::new()),
+            inner: JsonStore::new(path),
         }
     }
 
@@ -115,71 +148,29 @@ impl ScheduleStore {
     }
 
     pub fn load(&self) -> Result<(), String> {
-        let mut guard = self.entries.lock().unwrap();
-        guard.clear();
-        if self.path.is_empty() {
-            return Ok(());
-        }
-        let data = match std::fs::read(&self.path) {
-            Ok(d) => d,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(e) => return Err(e.to_string()),
-        };
-        let list: Vec<ScheduleEntry> = serde_json::from_slice(&data)
-            .map_err(|e| format!("parsing schedule store {}: {e}", self.path))?;
-        for e in list {
-            if e.id.is_empty() {
-                continue;
-            }
-            guard.insert(e.id.clone(), e);
-        }
-        Ok(())
-    }
-
-    fn save(&self, guard: &HashMap<String, ScheduleEntry>) -> Result<(), String> {
-        if self.path.is_empty() {
-            return Ok(());
-        }
-        let mut list: Vec<&ScheduleEntry> = guard.values().collect();
-        list.sort_by(|a, b| a.id.cmp(&b.id));
-        let mut data =
-            serde_json::to_vec_pretty(&list).map_err(|e| format!("encoding schedules: {e}"))?;
-        data.push(b'\n');
-        crate::chartsrepo::write_atomic(&self.path, &data, 0o600, 0o750)
+        self.inner.load()
     }
 
     pub fn list(&self) -> Vec<ScheduleEntry> {
-        let guard = self.entries.lock().unwrap();
-        let mut out: Vec<ScheduleEntry> = guard.values().cloned().collect();
-        out.sort_by(|a, b| a.id.cmp(&b.id));
-        out
+        self.inner.list()
     }
 
     pub fn get(&self, id: &str) -> Option<ScheduleEntry> {
-        self.entries.lock().unwrap().get(id).cloned()
+        self.inner.get(id)
     }
 
     /// Persist-then-swap: a failed save leaves memory identical to the file,
     /// so a deleted schedule cannot reappear after a restart (B-3).
     pub fn put(&self, e: ScheduleEntry) -> Result<(), String> {
-        let mut guard = self.entries.lock().unwrap();
-        let mut candidate = guard.clone();
-        candidate.insert(e.id.clone(), e);
-        self.save(&candidate)?;
-        *guard = candidate;
-        Ok(())
+        self.inner.put(e)
     }
 
     pub fn remove(&self, id: &str) -> Result<(), String> {
-        let mut guard = self.entries.lock().unwrap();
-        if !guard.contains_key(id) {
+        self.inner.require_loaded()?;
+        if self.inner.get(id).is_none() {
             return Err(format!("schedule {id:?} not found"));
         }
-        let mut candidate = guard.clone();
-        candidate.remove(id);
-        self.save(&candidate)?;
-        *guard = candidate;
-        Ok(())
+        self.inner.remove(id)
     }
 
     /// Record one destination's outcome; the entry is "ok" only when every
@@ -187,60 +178,22 @@ impl ScheduleStore {
     /// security decision), but the candidate is still saved before the live
     /// map is replaced so a failed write never divides the two.
     pub fn record_result(&self, id: &str, receiver: &str, ok: bool, job_err: &str) {
-        let mut guard = self.entries.lock().unwrap();
-        let mut candidate = guard.clone();
-        let Some(e) = candidate.get_mut(id) else {
-            return;
-        };
         let now = Utc::now();
-        e.last_run = Some(now);
-        let receiver = if receiver.is_empty() {
-            e.receiver.clone()
-        } else {
-            receiver.to_string()
-        };
-        e.receiver_results.insert(
-            receiver.clone(),
-            if ok { "ok".into() } else { "failed".into() },
-        );
-        let failed = e.receiver_list().into_iter().find(|d| {
-            e.receiver_results
-                .get(d)
-                .map(|v| v == "failed")
-                .unwrap_or(false)
+        let _ = self.inner.update(id, |e| {
+            let fallback = e.receiver.clone();
+            let next = compute_next_run(e, now);
+            record_target_result(e, receiver, &fallback, ok, job_err, now, next);
+            Ok(())
         });
-        if failed.is_none() {
-            e.last_result = "ok".to_string();
-            e.last_error.clear();
-            e.next_run = Some(compute_next_run(e, now));
-            if self.save(&candidate).is_ok() {
-                *guard = candidate;
-            }
-            return;
-        }
-        let failed = failed.unwrap();
-        e.last_result = "failed".to_string();
-        if !ok && !job_err.trim().is_empty() {
-            e.last_error = format!("backup to {receiver} failed: {job_err}");
-        } else if e.last_error.trim().is_empty() {
-            e.last_error = format!("backup to {failed} failed");
-        }
-        e.next_run = Some(compute_next_run(e, now));
-        if self.save(&candidate).is_ok() {
-            *guard = candidate;
-        }
     }
 
     /// Advance an entry's next run (called once when a fan-out starts).
     pub fn advance_next_run(&self, id: &str, now: DateTime<Utc>) {
-        let mut guard = self.entries.lock().unwrap();
-        let mut candidate = guard.clone();
-        if let Some(e) = candidate.get_mut(id) {
-            e.next_run = Some(compute_next_run(e, now));
-            if self.save(&candidate).is_ok() {
-                *guard = candidate;
-            }
-        }
+        let _ = self.inner.update(id, |e| {
+            let next = compute_next_run(e, now);
+            advance_fan_out(e, next);
+            Ok(())
+        });
     }
 }
 
@@ -455,14 +408,12 @@ fn scheduler_interval() -> std::time::Duration {
 /// Catch-up once, then run due schedules on the interval.
 pub async fn run_scheduler(state: Arc<AppState>) {
     let interval = scheduler_interval();
-    run_due_schedules(&state, Utc::now()).await;
     tracing::info!("buddy scheduler started (interval {:?})", interval);
-    let mut ticker = tokio::time::interval(interval);
-    ticker.tick().await;
-    loop {
-        ticker.tick().await;
-        run_due_schedules(&state, Utc::now()).await;
-    }
+    crate::schedule::run_catch_up_then_tick(interval, |now| {
+        let state = state.clone();
+        async move { run_due_schedules(&state, now).await }
+    })
+    .await;
 }
 
 #[cfg(test)]
@@ -485,6 +436,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("schedules.json");
         let store = ScheduleStore::new(path.to_str().unwrap());
+        store.load().unwrap();
         store
             .put(ScheduleEntry {
                 id: "s1".into(),
@@ -500,6 +452,111 @@ mod tests {
             store.get("s1").is_some(),
             "a failed delete must not drop the live entry"
         );
+    }
+
+    #[test]
+    fn a_corrupt_store_is_preserved_and_refuses_mutations() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("buddy-schedules.json");
+        let corrupt = b"{this is not json";
+        std::fs::write(&path, corrupt).unwrap();
+        let store = ScheduleStore::new(path.to_str().unwrap());
+        let error = store.load().unwrap_err();
+        assert!(error.contains("refusing mutations"), "{error}");
+
+        let backups: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("buddy-schedules.json.corrupt-")
+            })
+            .collect();
+        assert_eq!(backups.len(), 1);
+        assert_eq!(std::fs::read(backups[0].path()).unwrap(), corrupt);
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            corrupt,
+            "the original corrupt file must stay in place"
+        );
+
+        assert!(store
+            .put(ScheduleEntry {
+                id: "new".into(),
+                ..Default::default()
+            })
+            .is_err());
+        assert!(store.remove("new").is_err());
+        assert_eq!(
+            std::fs::read(&path).unwrap(),
+            corrupt,
+            "a refused mutation must never overwrite the corrupt file"
+        );
+    }
+
+    #[test]
+    fn the_on_disk_shape_keeps_the_legacy_field_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("buddy-schedules.json");
+        let store = ScheduleStore::new(path.to_str().unwrap());
+        store.load().unwrap();
+        let stamp = Utc.with_ymd_and_hms(2026, 1, 5, 10, 15, 0).unwrap();
+        store
+            .put(ScheduleEntry {
+                id: "s1".into(),
+                dataset: "tank/data".into(),
+                source: "naslos-a/data".into(),
+                receiver: "https://a".into(),
+                receivers: vec!["https://a".into()],
+                receiver_results: HashMap::from([("https://a".into(), "ok".into())]),
+                cadence: Cadence::Daily,
+                run_at: "02:30".into(),
+                prune_keep: 2,
+                enabled: true,
+                last_run: Some(stamp),
+                last_result: "ok".into(),
+                last_error: String::new(),
+                next_run: Some(stamp),
+            })
+            .unwrap();
+        let raw = std::fs::read_to_string(&path).unwrap();
+        for field in [
+            "\"runAt\"",
+            "\"pruneKeep\"",
+            "\"receiverResults\"",
+            "\"lastRun\"",
+            "\"lastResult\"",
+            "\"nextRun\"",
+        ] {
+            assert!(raw.contains(field), "missing {field}: {raw}");
+        }
+        assert!(!raw.contains("receiver_results"), "{raw}");
+        assert!(!raw.contains("run_at"), "{raw}");
+    }
+
+    #[test]
+    fn per_receiver_results_aggregate_into_one_outcome() {
+        let store = ScheduleStore::new("");
+        store
+            .put(ScheduleEntry {
+                id: "s1".into(),
+                receiver: "https://a".into(),
+                receivers: vec!["https://a".into(), "https://b".into()],
+                enabled: true,
+                ..Default::default()
+            })
+            .unwrap();
+        store.record_result("s1", "https://a", true, "");
+        store.record_result("s1", "https://b", false, "boom");
+        let entry = store.get("s1").unwrap();
+        assert_eq!(entry.receiver_results["https://a"], "ok");
+        assert_eq!(entry.receiver_results["https://b"], "failed");
+        assert_eq!(entry.last_result, "failed");
+        assert_eq!(entry.last_error, "backup to https://b failed: boom");
+        assert!(entry.last_run.is_some());
+        assert!(entry.next_run.is_some());
     }
 
     #[test]

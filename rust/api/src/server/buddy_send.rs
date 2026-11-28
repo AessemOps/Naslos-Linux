@@ -298,7 +298,7 @@ fn random_job_id() -> String {
 /// hundred bytes to ~0.2 % of the stream), so allow 0.5 % with a small floor.
 /// The old 1 MiB floor let a 2 MiB send lose half its data and still publish
 /// (SEC-2026-C4).
-fn send_shortfall_allowance(estimate: i64) -> i64 {
+pub(crate) fn send_shortfall_allowance(estimate: i64) -> i64 {
     const FLOOR: i64 = 16 << 10;
     let relative = estimate / 200;
     if relative > FLOOR {
@@ -712,7 +712,7 @@ fn save_send_state(path: &std::path::Path, state: &InstanceSendState) -> Result<
     crate::chartsrepo::write_atomic(&path.display().to_string(), &data, 0o600, 0o700)
 }
 
-async fn dataset_mount_state(
+pub(crate) async fn dataset_mount_state(
     agent: &crate::agent::Client,
     dataset: &str,
 ) -> Option<(bool, String, i64)> {
@@ -730,7 +730,7 @@ async fn dataset_mount_state(
 /// `zfs send -nP` estimate for the `base..snapshot` range instead
 /// (R-005: applying the full-send ratio to increments rejected every real one).
 #[allow(clippy::too_many_arguments)]
-fn require_publish_evidence(
+pub(crate) fn require_publish_evidence(
     dataset: &str,
     snapshot: &str,
     chain: &str,
@@ -763,7 +763,11 @@ fn require_publish_evidence(
     Ok(())
 }
 
-fn require_stream_matches_dataset(dataset: &str, used: i64, plain: i64) -> Result<(), String> {
+pub(crate) fn require_stream_matches_dataset(
+    dataset: &str,
+    used: i64,
+    plain: i64,
+) -> Result<(), String> {
     const EMPTY_FLOOR: i64 = 1 << 20;
     const MIN_RATIO: f64 = 0.05;
     if used < EMPTY_FLOOR || plain <= 0 {

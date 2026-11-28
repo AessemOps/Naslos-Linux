@@ -9,6 +9,7 @@ pub mod envelope;
 pub mod keys;
 pub mod peers;
 pub mod store;
+pub mod transfer;
 
 pub use auth::{Authenticator, RequestAuth};
 pub use envelope::{Manifest, ManifestChunk};
