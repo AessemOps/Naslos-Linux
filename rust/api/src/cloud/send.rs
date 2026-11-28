@@ -539,31 +539,19 @@ async fn run_send_job(
         Err(e) => {
             // RPC/transport failure: retryable. Keep the resume state (and
             // the chunk ledger) so the next attempt continues this link.
-            if preflight_abandons(false) {
-                abandon_link(
-                    &agent,
-                    &params.dataset,
-                    &resume_path,
-                    &ledger_path,
-                    &snapshot,
-                )
-                .await;
-            }
             finish_failed!(format!("estimating the stream: {e}"));
         }
     };
     if let Err(e) = preflight_estimate(&params.dataset, expected) {
         // Deterministic cap rejection: retrying the same link can never work.
-        if preflight_abandons(true) {
-            abandon_link(
-                &agent,
-                &params.dataset,
-                &resume_path,
-                &ledger_path,
-                &snapshot,
-            )
-            .await;
-        }
+        abandon_link(
+            &agent,
+            &params.dataset,
+            &resume_path,
+            &ledger_path,
+            &snapshot,
+        )
+        .await;
         finish_failed!(e);
     }
     job.update_progress(|p| {
@@ -699,13 +687,6 @@ async fn run_send_job(
             record_scheduled_audit(&state, &params, &destination, true, "").await;
         }
     }
-}
-
-/// Whether a preflight failure must abandon the link. Only the deterministic
-/// cap check does; an estimate RPC/transport error keeps the resume state so a
-/// later attempt can continue the same snapshot.
-fn preflight_abandons(deterministic: bool) -> bool {
-    deterministic
 }
 
 /// forceFull must discard an interrupted link rather than continue it.
@@ -921,14 +902,6 @@ mod tests {
         assert!(valid_keep_lineages(100).is_ok());
         assert!(valid_keep_lineages(0).is_err());
         assert!(valid_keep_lineages(101).is_err());
-    }
-
-    #[test]
-    fn only_a_deterministic_preflight_failure_abandons_the_link() {
-        // estimate_send RPC/transport error: keep the resume state + ledger.
-        assert!(!preflight_abandons(false));
-        // manifest/stream cap rejection: nothing can make this link work.
-        assert!(preflight_abandons(true));
     }
 
     #[test]

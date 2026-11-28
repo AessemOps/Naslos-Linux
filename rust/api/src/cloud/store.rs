@@ -168,8 +168,11 @@ fn trim_ascii(mut bytes: &[u8]) -> &[u8] {
 
 impl Ledger {
     /// Read the append-only JSON-lines ledger. A torn final line is the
-    /// expected crash residue of an interrupted append and is ignored; a
-    /// malformed earlier line is real corruption and fails closed.
+    /// expected crash residue of an interrupted append: it is dropped and the
+    /// file is truncated + fsynced back to the last complete record (a missing
+    /// trailing newline is also repaired), so the next append cannot
+    /// concatenate. A malformed earlier line is real corruption and fails
+    /// closed.
     async fn load(path: &FsPath) -> Result<Self, String> {
         let data = match tokio::fs::read(path).await {
             Ok(data) => data,
