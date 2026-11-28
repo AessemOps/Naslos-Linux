@@ -180,6 +180,7 @@ fn state_with_agent(base_url: &str) -> Arc<AppState> {
         buddy_schedules: std::sync::Arc::new(
             naslos_api::server::buddy_schedules::ScheduleStore::new(""),
         ),
+        cloud: Some(std::sync::Arc::new(naslos_api::cloud::Cloud::for_test())),
         storage_schedules: std::sync::Arc::new(
             naslos_api::server::storage_schedules::StorageScheduleStore::new(""),
         ),
@@ -369,6 +370,7 @@ async fn no_agent_configured_is_502() {
         buddy_schedules: std::sync::Arc::new(
             naslos_api::server::buddy_schedules::ScheduleStore::new(""),
         ),
+        cloud: Some(std::sync::Arc::new(naslos_api::cloud::Cloud::for_test())),
         storage_schedules: std::sync::Arc::new(
             naslos_api::server::storage_schedules::StorageScheduleStore::new(""),
         ),
@@ -1164,6 +1166,7 @@ async fn zvols_without_an_agent_are_502() {
         buddy_schedules: std::sync::Arc::new(
             naslos_api::server::buddy_schedules::ScheduleStore::new(""),
         ),
+        cloud: Some(std::sync::Arc::new(naslos_api::cloud::Cloud::for_test())),
         identity: None,
         external_directory: naslos_api::directory::Store::disabled(),
         storage_schedules: std::sync::Arc::new(

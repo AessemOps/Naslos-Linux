@@ -44,6 +44,12 @@ pub struct ImportDocument {
     pub shares: Vec<ShareRecord>,
     pub storage_schedules: Vec<StorageScheduleRecord>,
     pub buddy_schedules: Vec<BuddyScheduleRecord>,
+    /// Additive since cloud backup (FR-REP-13); an older export omits it.
+    #[serde(default)]
+    pub cloud_destinations: Vec<CloudDestinationRecord>,
+    /// Additive since cloud backup (FR-REP-13); an older export omits it.
+    #[serde(default)]
+    pub cloud_schedules: Vec<CloudScheduleRecord>,
     pub domains: Vec<DomainRecord>,
     pub ddns_entries: Vec<DdnsRecord>,
     pub apps: Vec<AppRecord>,
@@ -96,6 +102,35 @@ pub struct BuddyScheduleRecord {
     pub cadence: Cadence,
     pub run_at: String,
     pub prune_keep: usize,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CloudDestinationRecord {
+    pub id: String,
+    pub name: String,
+    pub endpoint: String,
+    pub region: String,
+    pub bucket: String,
+    #[serde(default)]
+    pub prefix: String,
+    #[serde(default)]
+    pub path_style: bool,
+    #[serde(default)]
+    pub allow_insecure_http: bool,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CloudScheduleRecord {
+    pub id: String,
+    pub dataset: String,
+    pub destinations: Vec<String>,
+    pub cadence: Cadence,
+    pub run_at: String,
+    pub keep_lineages: usize,
     pub enabled: bool,
 }
 
@@ -227,6 +262,25 @@ struct BuddyPlan {
 }
 
 #[derive(Debug)]
+struct CloudDestinationPlan {
+    entry: String,
+    value: crate::cloud::Destination,
+    existing: Option<crate::cloud::Destination>,
+    changes: Vec<String>,
+    requires_credentials: bool,
+    outcome: Outcome,
+}
+
+#[derive(Debug)]
+struct CloudSchedulePlan {
+    entry: String,
+    value: crate::cloud::schedules::ScheduleEntry,
+    existing: Option<crate::cloud::schedules::ScheduleEntry>,
+    changes: Vec<String>,
+    outcome: Outcome,
+}
+
+#[derive(Debug)]
 struct DdnsPlan {
     entry: String,
     original_id: String,
@@ -263,6 +317,8 @@ struct Plan {
     shares: Vec<SharePlan>,
     storage: Vec<StoragePlan>,
     buddy: Vec<BuddyPlan>,
+    cloud_destinations: Vec<CloudDestinationPlan>,
+    cloud_schedules: Vec<CloudSchedulePlan>,
     ddns: Vec<DdnsPlan>,
     domains: Vec<DomainPlan>,
     datasets: Vec<DatasetPlan>,
@@ -327,6 +383,9 @@ struct ImportReport {
     structural_only: bool,
     sections: BTreeMap<String, SectionReport>,
     totals: Totals,
+    /// Entries created without credentials (the export never contains one).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    requires_credentials: Vec<String>,
     warnings: Vec<String>,
 }
 
@@ -435,6 +494,7 @@ async fn build_plan(state: &AppState, document: &ImportDocument) -> Result<Plan,
     let shares = plan_shares(document, state, &mut errors).await;
     let storage = plan_storage(document, state, &mut errors).await;
     let buddy = plan_buddy(document, state, &mut errors).await;
+    let (cloud_destinations, cloud_schedules) = plan_cloud(document, state, &mut errors);
     let ddns = plan_ddns(document, state, &mut errors);
     let domains = plan_domains(document, state, &ddns, &mut errors);
     let datasets = plan_datasets(document, state, &mut errors).await;
@@ -483,6 +543,8 @@ async fn build_plan(state: &AppState, document: &ImportDocument) -> Result<Plan,
         shares,
         storage,
         buddy,
+        cloud_destinations,
+        cloud_schedules,
         ddns,
         domains,
         datasets,
@@ -924,6 +986,295 @@ async fn plan_buddy(
         });
     }
     plans
+}
+
+/// Plan cloud destinations and schedules. Credentials, the Secret name and
+/// runtime capability/results are never imported; a created destination is
+/// reported with `requiresCredentials`.
+fn plan_cloud(
+    document: &ImportDocument,
+    state: &AppState,
+    errors: &mut Vec<String>,
+) -> (Vec<CloudDestinationPlan>, Vec<CloudSchedulePlan>) {
+    let Some(cloud) = state.cloud.as_ref() else {
+        if !document.cloud_destinations.is_empty() || !document.cloud_schedules.is_empty() {
+            errors.push(
+                "cloud backup is not enabled; the cloudDestinations/cloudSchedules records cannot be restored"
+                    .to_string(),
+            );
+        }
+        return (Vec::new(), Vec::new());
+    };
+    let mut destination_plans = Vec::new();
+    let mut destination_ids: HashMap<String, String> = HashMap::new();
+    let mut seen_destinations = HashSet::new();
+    let current = cloud.destinations.list();
+    for (index, record) in document.cloud_destinations.iter().enumerate() {
+        let label = format!(
+            "cloudDestinations[{index}] ({} {}/{})",
+            record.name.trim(),
+            record.bucket.trim(),
+            record.prefix.trim()
+        );
+        if let Err(e) = validate_imported_id(&record.id, &label) {
+            errors.push(e);
+            continue;
+        }
+        let key = format!(
+            "{}|{}|{}",
+            record.endpoint.trim().to_ascii_lowercase(),
+            record.bucket.trim(),
+            crate::cloud::normalize_prefix(&record.prefix).unwrap_or_default()
+        );
+        if !seen_destinations.insert(key.clone()) {
+            destination_plans.push(CloudDestinationPlan {
+                entry: label,
+                value: crate::cloud::Destination::default(),
+                existing: None,
+                changes: Vec::new(),
+                requires_credentials: false,
+                outcome: Outcome::Skipped(
+                    "another imported destination already uses this endpoint/bucket/prefix; only one can be restored by natural key"
+                        .to_string(),
+                ),
+            });
+            continue;
+        }
+        let matches: Vec<crate::cloud::Destination> = current
+            .iter()
+            .filter(|destination| {
+                format!(
+                    "{}|{}|{}",
+                    destination.endpoint.to_ascii_lowercase(),
+                    destination.bucket,
+                    destination.prefix
+                ) == key
+            })
+            .cloned()
+            .collect();
+        if matches.len() > 1 {
+            destination_plans.push(CloudDestinationPlan {
+                entry: label,
+                value: crate::cloud::Destination::default(),
+                existing: None,
+                changes: Vec::new(),
+                requires_credentials: false,
+                outcome: Outcome::Skipped(
+                    "several existing destinations use this endpoint/bucket/prefix; remove the ambiguity first"
+                        .to_string(),
+                ),
+            });
+            continue;
+        }
+        let existing = matches.into_iter().next();
+        let mut value = existing
+            .clone()
+            .unwrap_or_else(|| crate::cloud::Destination {
+                id: new_server_id(),
+                created_at: Some(Utc::now()),
+                enabled: true,
+                ..Default::default()
+            });
+        value.name = record.name.trim().to_string();
+        value.endpoint = record.endpoint.trim().to_string();
+        value.region = record.region.trim().to_string();
+        value.bucket = record.bucket.trim().to_string();
+        value.prefix = record.prefix.clone();
+        value.path_style = record.path_style;
+        value.allow_insecure_http = record.allow_insecure_http;
+        value.enabled = record.enabled;
+        let value = match crate::cloud::normalize_destination(value) {
+            Ok(value) => value,
+            Err(e) => {
+                errors.push(format!("{label}: {e}"));
+                continue;
+            }
+        };
+        let changes = existing
+            .as_ref()
+            .map(|old| cloud_destination_changes(old, &value))
+            .unwrap_or_default();
+        let outcome = match &existing {
+            None => Outcome::Created(Some(value.id.clone())),
+            Some(old) if changes.is_empty() => Outcome::Unchanged,
+            Some(old) => Outcome::Updated(Some(old.id.clone()), changes.clone()),
+        };
+        destination_ids.insert(record.id.clone(), value.id.clone());
+        destination_plans.push(CloudDestinationPlan {
+            entry: label,
+            value,
+            requires_credentials: existing.is_none(),
+            existing,
+            changes,
+            outcome,
+        });
+    }
+
+    let mut schedule_plans = Vec::new();
+    let mut seen_schedules = HashSet::new();
+    let current_schedules = cloud.schedules.list();
+    for (index, record) in document.cloud_schedules.iter().enumerate() {
+        let label = format!("cloudSchedules[{index}] ({})", record.dataset.trim());
+        if let Err(e) = validate_imported_id(&record.id, &label) {
+            errors.push(e);
+            continue;
+        }
+        let mut mapped = Vec::new();
+        let mut unresolved = None;
+        for original in &record.destinations {
+            if let Some(id) = destination_ids.get(original) {
+                mapped.push(id.clone());
+            } else if cloud.destinations.get(original).is_some() {
+                mapped.push(original.clone());
+            } else {
+                unresolved = Some(original.clone());
+                break;
+            }
+        }
+        if let Some(original) = unresolved {
+            errors.push(format!(
+                "{label}: destination {original:?} is neither in this document nor on this NAS"
+            ));
+            continue;
+        }
+        let mut value = crate::cloud::schedules::ScheduleEntry {
+            id: new_server_id(),
+            dataset: record.dataset.trim().to_string(),
+            destinations: mapped.clone(),
+            cadence: record.cadence,
+            run_at: record.run_at.trim().to_string(),
+            keep_lineages: record.keep_lineages,
+            enabled: record.enabled,
+            ..Default::default()
+        };
+        if value.dataset.is_empty() {
+            errors.push(format!("{label}: dataset is required"));
+            continue;
+        }
+        if let Err(e) = crate::server::zfs::validate_dataset_path(&value.dataset) {
+            errors.push(format!("{label}: {e}"));
+            continue;
+        }
+        if !(1..=100).contains(&value.keep_lineages) {
+            errors.push(format!("{label}: keepLineages must be between 1 and 100"));
+            continue;
+        }
+        if let Err(e) = crate::schedule::parse_run_at(value.cadence, &value.run_at) {
+            errors.push(format!("{label}: {e}"));
+            continue;
+        }
+        if value.destination_list().is_empty() {
+            errors.push(format!("{label}: at least one destination is required"));
+            continue;
+        }
+        let key = format!("{}|{}", value.dataset, value.destination_list().join(","));
+        if !seen_schedules.insert(key) {
+            schedule_plans.push(CloudSchedulePlan {
+                entry: label,
+                value,
+                existing: None,
+                changes: Vec::new(),
+                outcome: Outcome::Skipped(
+                    "another imported schedule already covers this dataset/destination set; only one can be restored by natural key"
+                        .to_string(),
+                ),
+            });
+            continue;
+        }
+        let matches: Vec<crate::cloud::schedules::ScheduleEntry> = current_schedules
+            .iter()
+            .filter(|schedule| {
+                schedule.dataset == value.dataset
+                    && schedule.destination_list() == value.destination_list()
+            })
+            .cloned()
+            .collect();
+        if matches.len() > 1 {
+            schedule_plans.push(CloudSchedulePlan {
+                entry: label,
+                value,
+                existing: None,
+                changes: Vec::new(),
+                outcome: Outcome::Skipped(
+                    "several existing schedules cover this dataset/destination set; remove the ambiguity first"
+                        .to_string(),
+                ),
+            });
+            continue;
+        }
+        let existing = matches.into_iter().next();
+        if let Some(existing) = &existing {
+            value.id = existing.id.clone();
+        }
+        let changes = existing
+            .as_ref()
+            .map(|old| cloud_schedule_changes(old, &value))
+            .unwrap_or_default();
+        let outcome = match &existing {
+            None => Outcome::Created(Some(value.id.clone())),
+            Some(old) if changes.is_empty() => Outcome::Unchanged,
+            Some(old) => Outcome::Updated(Some(old.id.clone()), changes.clone()),
+        };
+        schedule_plans.push(CloudSchedulePlan {
+            entry: label,
+            value,
+            existing,
+            changes,
+            outcome,
+        });
+    }
+    (destination_plans, schedule_plans)
+}
+
+fn cloud_destination_changes(
+    old: &crate::cloud::Destination,
+    new: &crate::cloud::Destination,
+) -> Vec<String> {
+    let mut changes = Vec::new();
+    for (name, changed) in [
+        ("name", old.name != new.name),
+        ("endpoint", old.endpoint != new.endpoint),
+        ("region", old.region != new.region),
+        ("bucket", old.bucket != new.bucket),
+        ("prefix", old.prefix != new.prefix),
+        ("pathStyle", old.path_style != new.path_style),
+        (
+            "allowInsecureHttp",
+            old.allow_insecure_http != new.allow_insecure_http,
+        ),
+        ("enabled", old.enabled != new.enabled),
+    ] {
+        if changed {
+            changes.push(name.to_string());
+        }
+    }
+    changes
+}
+
+fn cloud_schedule_changes(
+    old: &crate::cloud::schedules::ScheduleEntry,
+    new: &crate::cloud::schedules::ScheduleEntry,
+) -> Vec<String> {
+    let mut changes = Vec::new();
+    if old.dataset != new.dataset {
+        changes.push("dataset".to_string());
+    }
+    if old.destination_list() != new.destination_list() {
+        changes.push("destinations".to_string());
+    }
+    if old.cadence != new.cadence {
+        changes.push("cadence".to_string());
+    }
+    if old.run_at != new.run_at {
+        changes.push("runAt".to_string());
+    }
+    if old.keep_lineages != new.keep_lineages {
+        changes.push("keepLineages".to_string());
+    }
+    if old.enabled != new.enabled {
+        changes.push("enabled".to_string());
+    }
+    changes
 }
 
 fn plan_ddns(
@@ -1687,6 +2038,8 @@ async fn apply_plan(state: &Arc<AppState>, plan: &mut Plan) {
         apply_shares(&state_for_writes, &mut staged.shares);
         apply_storage(&state_for_writes, &mut staged.storage);
         apply_buddy(&state_for_writes, &mut staged.buddy);
+        apply_cloud_destinations(&state_for_writes, &mut staged.cloud_destinations);
+        apply_cloud_schedules(&state_for_writes, &mut staged.cloud_schedules);
         apply_ddns(&state_for_writes, &mut staged.ddns, &mut ddns_ids);
         apply_datasets(&state_for_writes, &mut staged.datasets);
         (staged, ddns_ids)
@@ -1870,6 +2223,93 @@ fn apply_buddy(state: &AppState, plans: &mut [BuddyPlan]) {
                         };
                     }
                 }
+            }
+        }
+    }
+}
+
+fn apply_cloud_destinations(state: &AppState, plans: &mut [CloudDestinationPlan]) {
+    let Some(cloud) = state.cloud.as_ref() else {
+        for plan in plans.iter_mut().filter(|plan| is_write(&plan.outcome)) {
+            plan.outcome = Outcome::Failed("cloud backup is not enabled".to_string());
+        }
+        return;
+    };
+    for plan in plans {
+        if !is_write(&plan.outcome) {
+            continue;
+        }
+        let previous = plan
+            .existing
+            .as_ref()
+            .and_then(|existing| cloud.destinations.get(&existing.id));
+        let mut value = plan.value.clone();
+        if let Some(existing) = &plan.existing {
+            value.id = existing.id.clone();
+        }
+        let id = value.id.clone();
+        match cloud.destinations.put(value) {
+            Ok(()) => {
+                plan.outcome = match &plan.existing {
+                    None => Outcome::Created(Some(id)),
+                    Some(_) => Outcome::Updated(Some(id), plan.changes.clone()),
+                };
+            }
+            Err(e) => {
+                let rollback = match previous {
+                    Some(previous) => cloud.destinations.put(previous),
+                    None => cloud.destinations.remove(&id),
+                };
+                plan.outcome = match rollback {
+                    Ok(()) => Outcome::Failed(format!("saving the destination: {e}")),
+                    Err(rollback_error) => Outcome::Failed(format!(
+                        "saving the destination: {e}; rolling back the previous record also failed: {rollback_error}"
+                    )),
+                };
+            }
+        }
+    }
+}
+
+fn apply_cloud_schedules(state: &AppState, plans: &mut [CloudSchedulePlan]) {
+    let Some(cloud) = state.cloud.as_ref() else {
+        for plan in plans.iter_mut().filter(|plan| is_write(&plan.outcome)) {
+            plan.outcome = Outcome::Failed("cloud backup is not enabled".to_string());
+        }
+        return;
+    };
+    for plan in plans {
+        if !is_write(&plan.outcome) {
+            continue;
+        }
+        let previous = plan
+            .existing
+            .as_ref()
+            .and_then(|existing| cloud.schedules.get(&existing.id));
+        let mut value = plan.value.clone();
+        value.next_run = Some(crate::cloud::schedules::compute_next_run(
+            &value,
+            Utc::now(),
+        ));
+        let id = value.id.clone();
+        match cloud.schedules.put(value) {
+            Ok(()) => {
+                plan.outcome = match &plan.existing {
+                    None => Outcome::Created(Some(id)),
+                    Some(_) => Outcome::Updated(Some(id), plan.changes.clone()),
+                };
+            }
+            Err(e) => {
+                let rollback = match previous {
+                    Some(previous) => cloud.schedules.put(previous),
+                    None => cloud.schedules.remove(&id),
+                };
+                plan.outcome = match rollback {
+                    Ok(()) => Outcome::Failed(format!("saving the schedule: {e}")),
+                    Err(rollback_error) => Outcome::Failed(format!(
+                        "saving the schedule: {e}; rolling back the previous schedule also failed: {rollback_error}"
+                    )),
+                };
             }
         }
     }
@@ -2130,6 +2570,31 @@ fn build_report(plan: &Plan, schema_version: u32, dry_run: bool) -> ImportReport
         ),
     );
 
+    let mut cloud_destinations = section_report(
+        plan.cloud_destinations
+            .iter()
+            .map(|entry| (entry.entry.as_str(), &entry.outcome)),
+    );
+    if plan
+        .cloud_destinations
+        .iter()
+        .any(|entry| entry.requires_credentials && matches!(entry.outcome, Outcome::Created(_)))
+    {
+        cloud_destinations.notes.push(
+            "cloud credentials are not exported; enter them with PUT /api/cloud/destinations/{id} (accessKeyId + secretAccessKey, or credentialsSecret) before a backup can run"
+                .to_string(),
+        );
+    }
+    sections.insert("cloudDestinations".to_string(), cloud_destinations);
+    sections.insert(
+        "cloudSchedules".to_string(),
+        section_report(
+            plan.cloud_schedules
+                .iter()
+                .map(|entry| (entry.entry.as_str(), &entry.outcome)),
+        ),
+    );
+
     let mut ddns = section_report(
         plan.ddns
             .iter()
@@ -2214,6 +2679,14 @@ fn build_report(plan: &Plan, schema_version: u32, dry_run: bool) -> ImportReport
         structural_only: plan.structural_only,
         sections,
         totals,
+        requires_credentials: plan
+            .cloud_destinations
+            .iter()
+            .filter(|entry| {
+                entry.requires_credentials && matches!(entry.outcome, Outcome::Created(_))
+            })
+            .map(|entry| entry.entry.clone())
+            .collect(),
         warnings: plan.warnings.clone(),
     }
 }
@@ -2261,6 +2734,16 @@ fn plan_created(plan: &Plan) -> usize {
             .filter(|entry| matches!(entry.outcome, Outcome::Created(_)))
             .count()
         + plan
+            .cloud_destinations
+            .iter()
+            .filter(|entry| matches!(entry.outcome, Outcome::Created(_)))
+            .count()
+        + plan
+            .cloud_schedules
+            .iter()
+            .filter(|entry| matches!(entry.outcome, Outcome::Created(_)))
+            .count()
+        + plan
             .ddns
             .iter()
             .filter(|entry| matches!(entry.outcome, Outcome::Created(_)))
@@ -2289,6 +2772,16 @@ fn plan_updated(plan: &Plan) -> usize {
             .count()
         + plan
             .buddy
+            .iter()
+            .filter(|entry| matches!(entry.outcome, Outcome::Updated(_, _)))
+            .count()
+        + plan
+            .cloud_destinations
+            .iter()
+            .filter(|entry| matches!(entry.outcome, Outcome::Updated(_, _)))
+            .count()
+        + plan
+            .cloud_schedules
             .iter()
             .filter(|entry| matches!(entry.outcome, Outcome::Updated(_, _)))
             .count()

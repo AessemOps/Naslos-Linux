@@ -149,6 +149,14 @@ async fn main() {
         });
     }
 
+    // Scheduled cloud backups (FR-REP-13): catch-up + interval.
+    {
+        let scheduler_state = state.clone();
+        tokio::spawn(
+            async move { naslos_api::cloud::schedules::run_scheduler(scheduler_state).await },
+        );
+    }
+
     // Scheduled storage maintenance (FR-STO-10/11): periodic snapshots with
     // retention and per-pool scrubs. Catch-up runs once at startup.
     {

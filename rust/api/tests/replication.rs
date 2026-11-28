@@ -308,6 +308,7 @@ fn state_with_agent_and_kube(
         buddy: None,
         buddy_jobs: Arc::new(naslos_api::server::buddy_send::BuddyJobManager::new()),
         buddy_schedules: Arc::new(naslos_api::server::buddy_schedules::ScheduleStore::new("")),
+        cloud: Some(Arc::new(naslos_api::cloud::Cloud::for_test())),
         storage_schedules: Arc::new(
             naslos_api::server::storage_schedules::StorageScheduleStore::new(""),
         ),

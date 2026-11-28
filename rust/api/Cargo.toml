@@ -32,6 +32,12 @@ chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
 getrandom = "0.4"
 hickory-resolver = "0.26"
+http = "1"
+http-body-util = "0.1"
+# S3-compatible object storage for cloud backup (docs/cloud-backup.md).
+# Deliberately `aws-base` + our own reqwest 0.12 connector: the `aws` feature
+# would pull a second reqwest major and the platform TLS verifier.
+object_store = { version = "=0.14.2", default-features = false, features = ["aws-base", "ring"] }
 hyper-util = { version = "0.1", features = ["server", "server-auto", "tokio"] }
 include_dir = "0.7"
 ipnet = "2"

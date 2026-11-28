@@ -106,6 +106,9 @@ pub struct AppState {
     pub buddy_schedules: Arc<crate::server::buddy_schedules::ScheduleStore>,
     /// Scheduled storage maintenance: periodic snapshots and scrubs (FR-STO-10/11).
     pub storage_schedules: Arc<crate::server::storage_schedules::StorageScheduleStore>,
+    /// S3-compatible cloud backup (FR-REP-11/12/13). `None` only when the
+    /// subsystem failed to construct; routes then answer 503.
+    pub cloud: Option<Arc<crate::cloud::Cloud>>,
     /// In-memory local replication jobs (FR-REP).
     pub replication_jobs: Arc<crate::server::replication::ReplicationJobManager>,
     /// Release facts and the upgrader Job wiring (FR-UPD).
@@ -279,6 +282,7 @@ impl AppState {
                 }
                 store
             },
+            cloud: Some(Arc::new(crate::cloud::Cloud::from_env())),
             replication_jobs: Arc::new(crate::server::replication::ReplicationJobManager::new()),
             system: crate::system::Config::from_env(),
             updates: crate::system::Checker::from_env().map(Arc::new),
@@ -330,6 +334,7 @@ impl AppState {
             storage_schedules: Arc::new(
                 crate::server::storage_schedules::StorageScheduleStore::new(""),
             ),
+            cloud: Some(Arc::new(crate::cloud::Cloud::for_test())),
             replication_jobs: Arc::new(crate::server::replication::ReplicationJobManager::new()),
             system: crate::system::Config::default(),
             updates: None,

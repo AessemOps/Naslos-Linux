@@ -1524,6 +1524,20 @@ fn require_destroy_unblocked(
         }
     }
 
+    if let Some(cloud) = state.cloud.as_ref() {
+        if let Some(job) = cloud.jobs.running_dataset_overlaps(name) {
+            return Err((
+                StatusCode::CONFLICT,
+                format!(
+                    "dataset {name} is being used by cloud {} job {} ({}); wait for it to finish or cancel the job",
+                    job.kind.as_str(),
+                    job.id,
+                    job.dataset
+                ),
+            ));
+        }
+    }
+
     Ok(())
 }
 
@@ -1688,6 +1702,27 @@ fn bad_request(msg: &str) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_running_cloud_send_blocks_destroying_its_source() {
+        let state = AppState::for_test("test-secret");
+        state
+            .cloud
+            .as_ref()
+            .unwrap()
+            .jobs
+            .remember_running_for_test(
+                "cloud-1",
+                crate::cloud::jobs::JobKind::Send,
+                "dest",
+                "tank/src",
+                "tank/src",
+            );
+        let error = require_destroy_unblocked(&state, "tank/src", &[]).unwrap_err();
+        assert_eq!(error.0, StatusCode::CONFLICT);
+        assert!(error.1.contains("cloud send"), "{}", error.1);
+        assert!(error.1.contains("cloud-1"), "{}", error.1);
+    }
 
     #[test]
     fn pool_and_dataset_validators() {
