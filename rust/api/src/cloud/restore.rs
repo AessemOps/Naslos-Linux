@@ -330,13 +330,14 @@ pub async fn preflight_sequence(
         if !bad.is_empty() {
             problems.bad.insert(link.chain.clone(), bad);
         }
-        problems.plain_bytes += link.plain_bytes();
-    }
-    if problems.plain_bytes > MAX_STREAM_BODY_BYTES {
-        return Err(format!(
-            "the restore stream is {} bytes, above the agent's {MAX_STREAM_BODY_BYTES}-byte receive cap",
-            problems.plain_bytes
-        ));
+        let link_bytes = link.plain_bytes();
+        if link_bytes > MAX_STREAM_BODY_BYTES {
+            return Err(format!(
+                "chain {} is {link_bytes} bytes, above the agent's {MAX_STREAM_BODY_BYTES}-byte receive cap",
+                link.chain
+            ));
+        }
+        problems.plain_bytes += link_bytes;
     }
     Ok(problems)
 }

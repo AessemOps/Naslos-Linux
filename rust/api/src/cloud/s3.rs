@@ -398,6 +398,7 @@ impl S3Storage {
             }
             Err(object_store::Error::NotImplemented { .. })
             | Err(object_store::Error::NotSupported { .. }) => {
+                let _ = self.delete(&key).await;
                 return Ok(false);
             }
             Err(e) => {
@@ -413,6 +414,7 @@ impl S3Storage {
                 ) {
                     return Err(classified);
                 }
+                let _ = self.delete(&key).await;
                 return Ok(false);
             }
         }
