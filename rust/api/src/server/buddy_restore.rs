@@ -39,6 +39,14 @@ pub(crate) struct RestoreFlight {
 }
 
 impl RestoreFlight {
+    /// True while any synchronous restore is in flight.
+    pub(crate) fn any_in_flight() -> bool {
+        match active_restores().lock() {
+            Ok(guard) => !guard.is_empty(),
+            Err(poisoned) => !poisoned.into_inner().is_empty(),
+        }
+    }
+
     /// `None` when a restore of this dataset is already in progress.
     pub(crate) fn acquire(dataset: &str) -> Option<Self> {
         let mut active = match active_restores().lock() {

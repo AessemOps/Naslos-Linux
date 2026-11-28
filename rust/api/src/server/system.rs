@@ -31,6 +31,24 @@ fn precondition(message: &str) -> Response {
     )
 }
 
+/// Refuse a node-level action while a Buddy or replication transfer is
+/// writing; returns the 409 response when one is in flight.
+fn transfer_conflict(state: &AppState) -> Option<Response> {
+    if state.replication_jobs.has_running() {
+        return Some(json(
+            StatusCode::CONFLICT,
+            serde_json::json!({ "error": "a replication job is running" }),
+        ));
+    }
+    if super::buddy_restore::RestoreFlight::any_in_flight() {
+        return Some(json(
+            StatusCode::CONFLICT,
+            serde_json::json!({ "error": "a buddy restore is running" }),
+        ));
+    }
+    None
+}
+
 /// `GET /api/system/version`
 pub async fn version(State(state): State<Arc<AppState>>) -> Response {
     let release = state.system.release.clone();
@@ -87,6 +105,9 @@ pub async fn reboot_post(
             StatusCode::CONFLICT,
             serde_json::json!({ "error": "a Buddy backup job is running" }),
         );
+    }
+    if let Some(conflict) = transfer_conflict(&state) {
+        return conflict;
     }
     if state
         .cloud
@@ -244,6 +265,12 @@ pub async fn operation_post(State(state): State<Arc<AppState>>, body: Body) -> R
             serde_json::json!({ "error": "op must be naslos, talos or kubernetes" }),
         );
     }
+    // An upgrade restarts node-level workloads: a streaming replication or a
+    // synchronous Buddy restore must finish first (its writer is not durable
+    // through the restart).
+    if let Some(conflict) = transfer_conflict(&state) {
+        return conflict;
+    }
     let release = state.system.release.clone();
     if !release.upgradable() {
         return precondition(
@@ -280,6 +307,9 @@ pub async fn operation_post(State(state): State<Arc<AppState>>, body: Body) -> R
             StatusCode::CONFLICT,
             serde_json::json!({ "error": "a Buddy backup job is running" }),
         );
+    }
+    if let Some(conflict) = transfer_conflict(&state) {
+        return conflict;
     }
     if state
         .cloud
@@ -708,6 +738,108 @@ mod tests {
         )
         .await;
         assert_eq!(response.status(), StatusCode::CONFLICT);
+    }
+
+    async fn reboot(state: Arc<AppState>) -> Response {
+        reboot_post(
+            State(state),
+            Query(RebootQuery {
+                confirm: "reboot".into(),
+            }),
+        )
+        .await
+    }
+
+    async fn upgrade(state: Arc<AppState>) -> Response {
+        operation_post(State(state), Body::from(r#"{"op":"naslos"}"#)).await
+    }
+
+    fn running_replication(state: &AppState) {
+        state
+            .replication_jobs
+            .remember_running_for_test("tank/src", "tank/dst");
+    }
+
+    /// The restore flight set is process-wide, so its tests must not overlap.
+    fn restore_lock() -> &'static tokio::sync::Mutex<()> {
+        static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+        &LOCK
+    }
+
+    #[tokio::test]
+    async fn reboot_refuses_while_a_replication_job_is_running() {
+        let _guard = restore_lock().lock().await;
+        let state = Arc::new(AppState::for_test("test-secret"));
+        running_replication(&state);
+        assert_eq!(reboot(state).await.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn reboot_allows_after_the_replication_job_finished() {
+        let _guard = restore_lock().lock().await;
+        let state = Arc::new(AppState::for_test("test-secret"));
+        state
+            .replication_jobs
+            .remember_for_test("tank/src", "tank/dst");
+        assert_ne!(reboot(state).await.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn reboot_refuses_while_a_buddy_restore_is_running() {
+        let _guard = restore_lock().lock().await;
+        let state = Arc::new(AppState::for_test("test-secret"));
+        let _flight = super::super::buddy_restore::RestoreFlight::acquire("tank/src")
+            .expect("restore acquires");
+        assert_eq!(reboot(state).await.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn reboot_allows_after_the_buddy_restore_finished() {
+        let _guard = restore_lock().lock().await;
+        let state = Arc::new(AppState::for_test("test-secret"));
+        drop(
+            super::super::buddy_restore::RestoreFlight::acquire("tank/src")
+                .expect("restore acquires"),
+        );
+        assert_ne!(reboot(state).await.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn upgrade_refuses_while_a_replication_job_is_running() {
+        let _guard = restore_lock().lock().await;
+        let state = Arc::new(AppState::for_test("test-secret"));
+        running_replication(&state);
+        assert_eq!(upgrade(state).await.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn upgrade_allows_after_the_replication_job_finished() {
+        let _guard = restore_lock().lock().await;
+        let state = Arc::new(AppState::for_test("test-secret"));
+        state
+            .replication_jobs
+            .remember_for_test("tank/src", "tank/dst");
+        assert_ne!(upgrade(state).await.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn upgrade_refuses_while_a_buddy_restore_is_running() {
+        let _guard = restore_lock().lock().await;
+        let state = Arc::new(AppState::for_test("test-secret"));
+        let _flight = super::super::buddy_restore::RestoreFlight::acquire("tank/src")
+            .expect("restore acquires");
+        assert_eq!(upgrade(state).await.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn upgrade_allows_after_the_buddy_restore_finished() {
+        let _guard = restore_lock().lock().await;
+        let state = Arc::new(AppState::for_test("test-secret"));
+        drop(
+            super::super::buddy_restore::RestoreFlight::acquire("tank/src")
+                .expect("restore acquires"),
+        );
+        assert_ne!(upgrade(state).await.status(), StatusCode::CONFLICT);
     }
 
     fn facts() -> ReleaseFacts {
